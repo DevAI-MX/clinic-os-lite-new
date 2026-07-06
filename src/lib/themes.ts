@@ -14,6 +14,7 @@
  */
 
 export const THEME_IDS = [
+  "petroleo",
   "violet",
   "emerald",
   "cobalt",
@@ -23,9 +24,9 @@ export const THEME_IDS = [
 
 export type ThemeId = (typeof THEME_IDS)[number];
 
-export const DEFAULT_THEME: ThemeId = "violet";
+export const DEFAULT_THEME: ThemeId = "petroleo";
 
-export const STORAGE_KEY = "wacrm.theme";
+export const STORAGE_KEY = "clinicos.theme";
 
 /**
  * MODE — the light/dark dimension, orthogonal to the accent theme.
@@ -37,15 +38,17 @@ export const STORAGE_KEY = "wacrm.theme";
  * opt-in eye-strain-friendly alternative.
  *
  * Persisted under its own localStorage key so it composes freely
- * with the accent choice (you can run Violet-light or Violet-dark).
+ * with the accent choice (you can run Petróleo-light or Petróleo-dark).
  */
 export const MODES = ["light", "dark"] as const;
 
 export type Mode = (typeof MODES)[number];
 
-export const DEFAULT_MODE: Mode = "dark";
+// clinicOS defaults to light — the "porcelana" surface is the
+// product's visual identity; dark ("grafito") is the alternative.
+export const DEFAULT_MODE: Mode = "light";
 
-export const MODE_STORAGE_KEY = "wacrm.mode";
+export const MODE_STORAGE_KEY = "clinicos.mode";
 
 export function isMode(value: unknown): value is Mode {
   return (
@@ -67,6 +70,12 @@ export interface ThemeMeta {
 }
 
 export const THEMES: ReadonlyArray<ThemeMeta> = [
+  {
+    id: "petroleo",
+    name: "Petróleo",
+    tagline: "El azul clínico de clinicOS — sobrio y confiable.",
+    swatch: "oklch(0.45 0.078 218)",
+  },
   {
     id: "violet",
     name: "Violet",

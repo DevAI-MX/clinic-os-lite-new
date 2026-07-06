@@ -6,6 +6,28 @@ import { useAuth } from '@/hooks/use-auth';
 import { formatCurrency } from '@/lib/currency';
 import { toast } from 'sonner';
 import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomValue, Deal, MessageTemplate } from '@/types';
+import { MetaBadge } from '@/components/shared/status-badge';
+import {
+  APPOINTMENT_STATUS,
+  APPOINTMENT_TYPE_LABEL,
+  DEPOSIT_STATUS,
+} from '@/lib/clinic/status-maps';
+import type {
+  AppointmentStatus,
+  AppointmentType,
+  DepositStatus,
+} from '@/lib/clinic/types';
+
+/** Cita en la vista de contacto — solo las columnas que pinta la pestaña. */
+interface ContactAppointment {
+  id: string;
+  appointment_type: string;
+  status: string;
+  deposit_status: string;
+  deposit_amount: number | null;
+  starts_at: string;
+  procedure: { name: string } | { name: string }[] | null;
+}
 import {
   TemplatePicker,
   type TemplateSendValues,
@@ -94,6 +116,12 @@ export function ContactDetailView({
   const [deals, setDeals] = useState<Deal[]>([]);
   const [loadingDeals, setLoadingDeals] = useState(false);
 
+  // Citas tab — la conexión CRM ↔ Calendario. Muestra las citas de este
+  // contacto (agendadas por una persona o por el agente de atención) con
+  // su estado y el estado del anticipo.
+  const [appointments, setAppointments] = useState<ContactAppointment[]>([]);
+  const [loadingAppointments, setLoadingAppointments] = useState(false);
+
   const fetchContact = useCallback(async () => {
     if (!contactId) return;
     setLoading(true);
@@ -177,6 +205,20 @@ export function ContactDetailView({
     setLoadingDeals(false);
   }, [contactId, supabase]);
 
+  const fetchAppointments = useCallback(async () => {
+    if (!contactId) return;
+    setLoadingAppointments(true);
+    const { data } = await supabase
+      .from('appointments')
+      .select(
+        'id, appointment_type, status, deposit_status, deposit_amount, starts_at, procedure:procedures(name)',
+      )
+      .eq('contact_id', contactId)
+      .order('starts_at', { ascending: false });
+    setAppointments((data ?? []) as unknown as ContactAppointment[]);
+    setLoadingAppointments(false);
+  }, [contactId, supabase]);
+
   useEffect(() => {
     if (open && contactId) {
       fetchContact();
@@ -184,8 +226,9 @@ export function ContactDetailView({
       fetchNotes();
       fetchCustomFields();
       fetchDeals();
+      fetchAppointments();
     }
-  }, [open, contactId, fetchContact, fetchTags, fetchNotes, fetchCustomFields, fetchDeals]);
+  }, [open, contactId, fetchContact, fetchTags, fetchNotes, fetchCustomFields, fetchDeals, fetchAppointments]);
 
   async function copyPhone() {
     if (!contact) return;
@@ -481,6 +524,12 @@ export function ContactDetailView({
                   Custom Fields
                 </TabsTrigger>
                 <TabsTrigger
+                  value="citas"
+                  className="data-active:bg-muted data-active:text-primary text-muted-foreground"
+                >
+                  Citas
+                </TabsTrigger>
+                <TabsTrigger
                   value="deals"
                   className="data-active:bg-muted data-active:text-primary text-muted-foreground"
                 >
@@ -693,6 +742,75 @@ export function ContactDetailView({
               </TabsContent>
 
               {/* Deals Tab */}
+              {/* Citas Tab — conexión con el Calendario. */}
+              <TabsContent value="citas" className="flex-1 overflow-y-auto px-4 py-3">
+                {loadingAppointments ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="size-5 animate-spin text-primary" />
+                  </div>
+                ) : appointments.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    Sin citas todavía
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {appointments.map((appt) => {
+                      const start = new Date(appt.starts_at);
+                      const proc = Array.isArray(appt.procedure)
+                        ? appt.procedure[0]
+                        : appt.procedure;
+                      const statusMeta =
+                        APPOINTMENT_STATUS[appt.status as AppointmentStatus];
+                      const depositMeta =
+                        DEPOSIT_STATUS[appt.deposit_status as DepositStatus];
+                      const typeLabel =
+                        APPOINTMENT_TYPE_LABEL[
+                          appt.appointment_type as AppointmentType
+                        ] ?? appt.appointment_type;
+                      return (
+                        <div
+                          key={appt.id}
+                          className="rounded-lg border border-border bg-muted/50 p-3"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-foreground">
+                                {proc?.name ?? typeLabel}
+                              </p>
+                              <p className="nums mt-0.5 text-xs text-muted-foreground">
+                                {start.toLocaleString('es-MX', {
+                                  weekday: 'short',
+                                  day: 'numeric',
+                                  month: 'short',
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}
+                              </p>
+                            </div>
+                            {statusMeta && (
+                              <MetaBadge meta={statusMeta} className="shrink-0" />
+                            )}
+                          </div>
+                          {depositMeta && appt.deposit_status !== 'no_aplica' && (
+                            <div className="mt-2 flex items-center justify-between gap-2">
+                              <MetaBadge meta={depositMeta} />
+                              {appt.deposit_amount != null && (
+                                <span className="nums text-xs text-muted-foreground">
+                                  {formatCurrency(
+                                    appt.deposit_amount,
+                                    defaultCurrency,
+                                  )}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </TabsContent>
+
               <TabsContent value="deals" className="flex-1 overflow-y-auto px-4 py-3">
                 {loadingDeals ? (
                   <div className="flex items-center justify-center py-8">

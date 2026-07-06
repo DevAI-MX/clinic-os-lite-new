@@ -9,6 +9,22 @@
  * instead of a runtime rejection from Meta.
  */
 
+// Zernio adapter (src/lib/zernio) — when the owner connects their
+// WhatsApp number through https://zernio.com instead of Meta directly,
+// zernioEnabled() flips true and the three core send functions below
+// (text / media / template) route through Zernio's API. This file is
+// the lowest-level choke point every outbound path shares (inbox send,
+// AI auto-reply, automations, flows, broadcasts), so branching here
+// covers all of them without touching any caller. Interactive
+// (buttons/lists) and reaction sends have no Zernio mapping yet and
+// stay Meta-direct — see docs/ZERNIO.md → Limitations.
+import { zernioEnabled } from '@/lib/zernio/config'
+import {
+  zernioSendMedia,
+  zernioSendTemplate,
+  zernioSendText,
+} from '@/lib/zernio/client'
+
 const META_API_VERSION = 'v21.0'
 const META_API_BASE = `https://graph.facebook.com/${META_API_VERSION}`
 
@@ -233,6 +249,11 @@ export async function sendTextMessage(
   args: SendTextMessageArgs
 ): Promise<MetaSendResult> {
   const { phoneNumberId, accessToken, to, text, contextMessageId } = args
+  if (zernioEnabled()) {
+    // contextMessageId (reply quoting) has no Zernio equivalent — the
+    // message still sends, just without the quote preview.
+    return zernioSendText({ to, text })
+  }
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
@@ -292,6 +313,12 @@ export async function sendMediaMessage(
 ): Promise<MetaSendResult> {
   const { phoneNumberId, accessToken, to, kind, link, caption, filename, contextMessageId } = args
   if (!link) throw new Error('sendMediaMessage requires a link.')
+  if (zernioEnabled()) {
+    // `filename` (document display name) and `contextMessageId` have no
+    // Zernio mapping — dropped. The caption/audio guard is applied
+    // inside zernioSendMedia, matching Meta's rules.
+    return zernioSendMedia({ to, mediaType: kind, url: link, caption })
+  }
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
 
   // Audio accepts neither caption nor filename per Meta's spec — adding
@@ -387,6 +414,22 @@ export async function sendTemplateMessage(
     messageParams,
     contextMessageId,
   } = args
+  if (zernioEnabled()) {
+    // Zernio resolves the approved template server-side (media headers
+    // included), so only the body variable values travel — numbered
+    // "1", "2", … to match WhatsApp's {{1}} placeholders. Header-text
+    // variables, per-send media overrides, URL/COPY_CODE button params,
+    // and contextMessageId have no Zernio mapping — see docs/ZERNIO.md.
+    const bodyValues = messageParams?.body ?? params ?? []
+    return zernioSendTemplate({
+      to,
+      name: templateName,
+      language,
+      variableMapping: Object.fromEntries(
+        bodyValues.map((value, i) => [String(i + 1), String(value)]),
+      ),
+    })
+  }
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
 
   const templatePayload: Record<string, unknown> = {

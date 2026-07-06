@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Inter } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import "./globals.css";
 import { ThemeProvider } from "@/hooks/use-theme";
@@ -13,17 +13,23 @@ import {
   THEME_IDS,
 } from "@/lib/themes";
 
-const inter = Inter({
+const geistSans = Geist({
   variable: "--font-sans",
+  subsets: ["latin"],
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
   subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
   title: {
-    default: "wacrm",
-    template: "%s — wacrm",
+    default: "clinicOS",
+    template: "%s — clinicOS",
   },
-  description: "Self-hostable CRM template for WhatsApp.",
+  description:
+    "La plataforma de agentes IA para clínicas — WhatsApp, CRM y agenda.",
   robots: {
     index: false,
     follow: false,
@@ -39,8 +45,9 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#020617",
-  colorScheme: "dark light",
+  // Porcelana — matches the light-mode --background token.
+  themeColor: "#f8f6f1",
+  colorScheme: "light dark",
 };
 
 // Inline boot script — runs before React hydrates so the user's
@@ -82,10 +89,10 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="en"
+      lang="es"
       data-theme={DEFAULT_THEME}
       data-mode={DEFAULT_MODE}
-      className={`${inter.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
       // The `theme-boot` script below rewrites `data-theme` and
       // `data-mode` on <html> from localStorage before React hydrates,
       // so for any non-default choice the client DOM intentionally

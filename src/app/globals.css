@@ -39,6 +39,12 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+  /* Semánticos clinicOS: éxito (pagos, citas confirmadas) y advertencia
+   * (anticipos pendientes) — usados por el sistema de StatusBadge. */
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
   /* Secondary card surface (tile / hover backgrounds) and the accent
    * extras the Settings redesign leans on. The raw --primary-* vars
    * already exist per-accent below; these mappings expose them (and
@@ -55,99 +61,149 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+  /* Sombras clinicOS de tres niveles: toda tarjeta usa shadow-soft y
+   * sube a shadow-lifted al hover; shadow-floating para popovers/paneles. */
+  --shadow-soft: 0 1px 2px oklch(0.2 0.01 75 / 0.05), 0 4px 14px oklch(0.2 0.01 75 / 0.06);
+  --shadow-lifted: 0 1px 2px oklch(0.2 0.01 75 / 0.06), 0 8px 24px oklch(0.2 0.01 75 / 0.1);
+  --shadow-floating: 0 2px 4px oklch(0.2 0.01 75 / 0.08), 0 16px 48px oklch(0.2 0.01 75 / 0.16);
+  --animate-pulse-dot: pulse-dot 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-fade-up: fade-up 0.35s cubic-bezier(0.21, 1.02, 0.73, 1) both;
+  --animate-fade-in: fade-in 0.25s ease-out both;
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.55; transform: scale(0.82); }
+  }
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
 }
 
 /* ============================================================
- * THEMING — two orthogonal dimensions
+ * THEMING — two orthogonal dimensions (arquitectura wacrm,
+ * tokens clinicOS "porcelana / grafito + azul petróleo")
  *
- *   1. MODE   (light / dark)  → neutral surfaces. Selected with
- *      `document.documentElement.dataset.mode`. Defaults to dark.
- *   2. ACCENT (violet / …)    → the primary color only. Selected
- *      with `document.documentElement.dataset.theme`.
+ *   1. MODE   (light / dark)  → superficies neutras. Selected with
+ *      `document.documentElement.dataset.mode`. Defaults to LIGHT
+ *      (porcelana) — la identidad visual de clinicOS.
+ *   2. ACCENT (petroleo / …)  → the primary color only. Selected
+ *      with `document.documentElement.dataset.theme`. "petroleo" es
+ *      el default; los demás acentos quedan como opciones white-label
+ *      por clínica.
  *
- * The two compose: any accent works in either mode. Neutral
- * tokens (background / card / border / muted / sidebar surfaces /
- * neutral charts / radius) live in the MODE blocks below; accent
- * tokens (--primary*, --ring, --chart-1, --sidebar-primary*,
- * --sidebar-ring) live in the ACCENT blocks. They set disjoint
- * variables, so cascade order between them doesn't matter.
- *
- * `:root` carries the dark-mode + violet defaults so a visitor
- * renders correctly before JS runs; the boot script in
- * layout.tsx replays the saved mode + accent before first paint.
- *
- * The three `--primary-*` extras (hover / soft / soft-2) feed
- * hovered primary buttons and tinted-primary surfaces (sidebar
- * active pill, validation badges).
- *
- * Token shapes come straight from the design handoff at
- * project/Color Themes.html — change one, change the other.
+ * The two compose: any accent works in either mode. Neutral tokens
+ * live in the MODE blocks; accent tokens (--primary*, --ring,
+ * --chart-1, --sidebar-primary*, --sidebar-ring) live in the ACCENT
+ * blocks. "petroleo" además define su variante oscura (el petróleo
+ * claro no contrasta sobre grafito), vía el bloque combinado
+ * [data-mode="dark"][data-theme="petroleo"].
  * ============================================================ */
 
 /* ---- MODE: neutral surfaces ---- */
 
 :root,
-html[data-mode="dark"] {
-  --background: oklch(0.13 0.01 260);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.18 0.01 260);
-  --card-2: oklch(0.205 0.01 260);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.18 0.01 260);
-  --popover-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.22 0.01 260);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.22 0.01 260);
-  --muted-foreground: oklch(0.65 0.01 260);
-  --accent: oklch(0.22 0.01 260);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.28 0.01 260);
-  --input: oklch(0.28 0.01 260);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+html[data-mode="light"] {
+  --background: oklch(0.977 0.0035 85);
+  --foreground: oklch(0.24 0.012 75);
+  --card: oklch(0.995 0.002 90);
+  --card-2: oklch(0.982 0.003 87);
+  --card-foreground: oklch(0.24 0.012 75);
+  --popover: oklch(0.995 0.002 90);
+  --popover-foreground: oklch(0.24 0.012 75);
+  --secondary: oklch(0.955 0.006 85);
+  --secondary-foreground: oklch(0.32 0.012 75);
+  --muted: oklch(0.945 0.0055 85);
+  --muted-foreground: oklch(0.5 0.012 75);
+  --accent: oklch(0.936 0.012 205);
+  --accent-foreground: oklch(0.33 0.045 218);
+  --destructive: oklch(0.55 0.17 26);
+  --success: oklch(0.55 0.1 155);
+  --success-foreground: oklch(0.98 0.01 155);
+  --warning: oklch(0.72 0.13 75);
+  --warning-foreground: oklch(0.28 0.05 75);
+  --border: oklch(0.908 0.006 85);
+  --input: oklch(0.908 0.006 85);
+  --chart-2: oklch(0.74 0.062 78);
+  --chart-3: oklch(0.64 0.052 152);
+  --chart-4: oklch(0.62 0.075 42);
+  --chart-5: oklch(0.56 0.045 262);
   --radius: 0.625rem;
-  --sidebar: oklch(0.16 0.01 260);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.22 0.01 260);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(0.28 0.01 260);
+  --sidebar: oklch(0.963 0.004 85);
+  --sidebar-foreground: oklch(0.3 0.012 75);
+  --sidebar-accent: oklch(0.928 0.009 200);
+  --sidebar-accent-foreground: oklch(0.31 0.045 218);
+  --sidebar-border: oklch(0.905 0.006 85);
 }
 
-html[data-mode="light"] {
-  --background: oklch(0.99 0.002 260);
-  --foreground: oklch(0.21 0.01 260);
-  --card: oklch(1 0 0);
-  --card-2: oklch(0.985 0.002 260);
-  --card-foreground: oklch(0.21 0.01 260);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.21 0.01 260);
-  --secondary: oklch(0.967 0.003 260);
-  --secondary-foreground: oklch(0.25 0.01 260);
-  --muted: oklch(0.967 0.003 260);
-  --muted-foreground: oklch(0.52 0.015 260);
-  --accent: oklch(0.96 0.004 260);
-  --accent-foreground: oklch(0.25 0.01 260);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0.004 260);
-  --input: oklch(0.922 0.004 260);
-  --chart-2: oklch(0.6 0.1 260);
-  --chart-3: oklch(0.7 0.06 260);
-  --chart-4: oklch(0.8 0.04 260);
-  --chart-5: oklch(0.87 0.03 260);
+html[data-mode="dark"] {
+  --background: oklch(0.185 0.006 75);
+  --foreground: oklch(0.93 0.005 85);
+  --card: oklch(0.223 0.007 75);
+  --card-2: oklch(0.245 0.007 75);
+  --card-foreground: oklch(0.93 0.005 85);
+  --popover: oklch(0.223 0.007 75);
+  --popover-foreground: oklch(0.93 0.005 85);
+  --secondary: oklch(0.268 0.008 75);
+  --secondary-foreground: oklch(0.9 0.006 85);
+  --muted: oklch(0.262 0.008 75);
+  --muted-foreground: oklch(0.66 0.01 80);
+  --accent: oklch(0.295 0.018 210);
+  --accent-foreground: oklch(0.87 0.035 202);
+  --destructive: oklch(0.66 0.15 25);
+  --success: oklch(0.68 0.1 155);
+  --success-foreground: oklch(0.16 0.03 155);
+  --warning: oklch(0.78 0.12 78);
+  --warning-foreground: oklch(0.24 0.05 75);
+  --border: oklch(1 0 0 / 9%);
+  --input: oklch(1 0 0 / 13%);
+  --chart-2: oklch(0.78 0.06 80);
+  --chart-3: oklch(0.7 0.055 152);
+  --chart-4: oklch(0.68 0.075 45);
+  --chart-5: oklch(0.64 0.05 262);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0.002 260);
-  --sidebar-foreground: oklch(0.21 0.01 260);
-  --sidebar-accent: oklch(0.96 0.004 260);
-  --sidebar-accent-foreground: oklch(0.25 0.01 260);
-  --sidebar-border: oklch(0.922 0.004 260);
+  --sidebar: oklch(0.165 0.006 75);
+  --sidebar-foreground: oklch(0.88 0.006 85);
+  --sidebar-accent: oklch(0.26 0.015 210);
+  --sidebar-accent-foreground: oklch(0.87 0.035 202);
+  --sidebar-border: oklch(1 0 0 / 8%);
 }
 
 /* ---- ACCENT: primary color ---- */
 
 :root,
+html[data-theme="petroleo"] {
+  --primary: oklch(0.45 0.078 218);
+  --primary-foreground: oklch(0.98 0.005 200);
+  --primary-hover: oklch(0.52 0.08 218);
+  --primary-soft: oklch(0.45 0.078 218 / 0.12);
+  --primary-soft-2: oklch(0.45 0.078 218 / 0.2);
+  --ring: oklch(0.58 0.07 218);
+  --chart-1: oklch(0.52 0.085 218);
+  --sidebar-primary: oklch(0.45 0.078 218);
+  --sidebar-primary-foreground: oklch(0.98 0.005 200);
+  --sidebar-ring: oklch(0.58 0.07 218);
+}
+
+/* Petróleo en modo oscuro: el acento sube de luminosidad para
+ * contrastar sobre grafito (valores del legacy .dark). */
+html[data-mode="dark"][data-theme="petroleo"] {
+  --primary: oklch(0.72 0.082 205);
+  --primary-foreground: oklch(0.17 0.025 218);
+  --primary-hover: oklch(0.78 0.08 205);
+  --primary-soft: oklch(0.72 0.082 205 / 0.15);
+  --primary-soft-2: oklch(0.72 0.082 205 / 0.25);
+  --ring: oklch(0.6 0.07 210);
+  --chart-1: oklch(0.68 0.085 210);
+  --sidebar-primary: oklch(0.72 0.082 205);
+  --sidebar-primary-foreground: oklch(0.17 0.025 218);
+  --sidebar-ring: oklch(0.6 0.07 210);
+}
+
 html[data-theme="violet"] {
   --primary: oklch(0.526 0.247 293);
   --primary-foreground: oklch(0.985 0 0);
@@ -222,9 +278,53 @@ html[data-theme="rose"] {
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "ss01", "cv11";
+    /* Evita el "rubber-band" que deforma la UI al sobre-scrollear en touch. */
+    overscroll-behavior: none;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
   }
   html {
     @apply font-sans;
+    scrollbar-gutter: stable;
+    overscroll-behavior: none;
+    -webkit-text-size-adjust: 100%;
+  }
+  h1, h2, h3, h4 {
+    @apply tracking-tight;
+    text-wrap: balance;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 18%, transparent);
+  }
+  /* Scrollbars discretos */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: oklch(0.65 0.01 80 / 0.35) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: oklch(0.65 0.01 80 / 0.3);
+    border-radius: 999px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer utilities {
+  /* Números tabulares para montos, horas y KPIs */
+  .nums {
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  /* Transición estándar de la app: 150–250ms en todo lo interactivo */
+  .interactive {
+    @apply transition-all duration-200 ease-out;
   }
 }
