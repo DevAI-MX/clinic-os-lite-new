@@ -91,6 +91,7 @@ interface NavItem {
 // siendo accesibles por URL — se reincorporarán al menú conforme se
 // vayan adaptando al producto.
 const navItems: NavItem[] = [
+  { href: "/concierge", label: "Concierge", icon: Sparkles, beta: true },
   { href: "/inbox", label: "Conversaciones", icon: MessageSquare },
   { href: "/contacts", label: "CRM", icon: Users },
   { href: "/calendario", label: "Calendario", icon: CalendarDays },

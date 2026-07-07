@@ -1,0 +1,898 @@
+<title>Concierge — clinicOS</title>
+<style>
+/* ============================================================
+   clinicOS Concierge — mockup estático
+   Tokens copiados 1:1 de src/app/globals.css (modo light "porcelana"
+   por defecto, dark "grafito" vía prefers-color-scheme, acento
+   "petróleo"). Soporta overrides :root[data-theme="light|dark"].
+   ============================================================ */
+
+:root {
+  /* ---- MODE light (porcelana) — default real del panel ---- */
+  --background: oklch(0.977 0.0035 85);
+  --foreground: oklch(0.24 0.012 75);
+  --card: oklch(0.995 0.002 90);
+  --card-2: oklch(0.982 0.003 87);
+  --secondary: oklch(0.955 0.006 85);
+  --muted: oklch(0.945 0.0055 85);
+  --muted-foreground: oklch(0.5 0.012 75);
+  --accent: oklch(0.936 0.012 205);
+  --accent-foreground: oklch(0.33 0.045 218);
+  --destructive: oklch(0.55 0.17 26);
+  --success: oklch(0.55 0.1 155);
+  --success-foreground: oklch(0.98 0.01 155);
+  --warning: oklch(0.72 0.13 75);
+  --warning-foreground: oklch(0.28 0.05 75);
+  --border: oklch(0.908 0.006 85);
+  --input: oklch(0.908 0.006 85);
+  --sidebar: oklch(0.963 0.004 85);
+  --sidebar-foreground: oklch(0.3 0.012 75);
+  --sidebar-accent: oklch(0.928 0.009 200);
+  --sidebar-accent-foreground: oklch(0.31 0.045 218);
+  --sidebar-border: oklch(0.905 0.006 85);
+  /* ---- ACCENT petróleo (light) ---- */
+  --primary: oklch(0.45 0.078 218);
+  --primary-foreground: oklch(0.98 0.005 200);
+  --primary-hover: oklch(0.52 0.08 218);
+  --primary-soft: oklch(0.45 0.078 218 / 0.12);
+  --primary-soft-2: oklch(0.45 0.078 218 / 0.2);
+  --ring: oklch(0.58 0.07 218);
+  /* ---- shared ---- */
+  --radius: 0.625rem;
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --shadow-soft: 0 1px 2px oklch(0.2 0.01 75 / 0.05), 0 4px 14px oklch(0.2 0.01 75 / 0.06);
+  --shadow-lifted: 0 1px 2px oklch(0.2 0.01 75 / 0.06), 0 8px 24px oklch(0.2 0.01 75 / 0.1);
+  --shadow-floating: 0 2px 4px oklch(0.2 0.01 75 / 0.08), 0 16px 48px oklch(0.2 0.01 75 / 0.16);
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* ---- MODE dark (grafito) por preferencia del sistema ---- */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.185 0.006 75);
+    --foreground: oklch(0.93 0.005 85);
+    --card: oklch(0.223 0.007 75);
+    --card-2: oklch(0.245 0.007 75);
+    --secondary: oklch(0.268 0.008 75);
+    --muted: oklch(0.262 0.008 75);
+    --muted-foreground: oklch(0.66 0.01 80);
+    --accent: oklch(0.295 0.018 210);
+    --accent-foreground: oklch(0.87 0.035 202);
+    --destructive: oklch(0.66 0.15 25);
+    --success: oklch(0.68 0.1 155);
+    --success-foreground: oklch(0.16 0.03 155);
+    --warning: oklch(0.78 0.12 78);
+    --warning-foreground: oklch(0.24 0.05 75);
+    --border: oklch(1 0 0 / 9%);
+    --input: oklch(1 0 0 / 13%);
+    --sidebar: oklch(0.165 0.006 75);
+    --sidebar-foreground: oklch(0.88 0.006 85);
+    --sidebar-accent: oklch(0.26 0.015 210);
+    --sidebar-accent-foreground: oklch(0.87 0.035 202);
+    --sidebar-border: oklch(1 0 0 / 8%);
+    --primary: oklch(0.72 0.082 205);
+    --primary-foreground: oklch(0.17 0.025 218);
+    --primary-hover: oklch(0.78 0.08 205);
+    --primary-soft: oklch(0.72 0.082 205 / 0.15);
+    --primary-soft-2: oklch(0.72 0.082 205 / 0.25);
+    --ring: oklch(0.6 0.07 210);
+  }
+}
+
+/* ---- Override explícito del visor: data-theme gana en ambos sentidos ---- */
+:root[data-theme="light"] {
+  --background: oklch(0.977 0.0035 85);
+  --foreground: oklch(0.24 0.012 75);
+  --card: oklch(0.995 0.002 90);
+  --card-2: oklch(0.982 0.003 87);
+  --secondary: oklch(0.955 0.006 85);
+  --muted: oklch(0.945 0.0055 85);
+  --muted-foreground: oklch(0.5 0.012 75);
+  --accent: oklch(0.936 0.012 205);
+  --accent-foreground: oklch(0.33 0.045 218);
+  --destructive: oklch(0.55 0.17 26);
+  --success: oklch(0.55 0.1 155);
+  --success-foreground: oklch(0.98 0.01 155);
+  --warning: oklch(0.72 0.13 75);
+  --warning-foreground: oklch(0.28 0.05 75);
+  --border: oklch(0.908 0.006 85);
+  --input: oklch(0.908 0.006 85);
+  --sidebar: oklch(0.963 0.004 85);
+  --sidebar-foreground: oklch(0.3 0.012 75);
+  --sidebar-accent: oklch(0.928 0.009 200);
+  --sidebar-accent-foreground: oklch(0.31 0.045 218);
+  --sidebar-border: oklch(0.905 0.006 85);
+  --primary: oklch(0.45 0.078 218);
+  --primary-foreground: oklch(0.98 0.005 200);
+  --primary-hover: oklch(0.52 0.08 218);
+  --primary-soft: oklch(0.45 0.078 218 / 0.12);
+  --primary-soft-2: oklch(0.45 0.078 218 / 0.2);
+  --ring: oklch(0.58 0.07 218);
+}
+:root[data-theme="dark"] {
+  --background: oklch(0.185 0.006 75);
+  --foreground: oklch(0.93 0.005 85);
+  --card: oklch(0.223 0.007 75);
+  --card-2: oklch(0.245 0.007 75);
+  --secondary: oklch(0.268 0.008 75);
+  --muted: oklch(0.262 0.008 75);
+  --muted-foreground: oklch(0.66 0.01 80);
+  --accent: oklch(0.295 0.018 210);
+  --accent-foreground: oklch(0.87 0.035 202);
+  --destructive: oklch(0.66 0.15 25);
+  --success: oklch(0.68 0.1 155);
+  --success-foreground: oklch(0.16 0.03 155);
+  --warning: oklch(0.78 0.12 78);
+  --warning-foreground: oklch(0.24 0.05 75);
+  --border: oklch(1 0 0 / 9%);
+  --input: oklch(1 0 0 / 13%);
+  --sidebar: oklch(0.165 0.006 75);
+  --sidebar-foreground: oklch(0.88 0.006 85);
+  --sidebar-accent: oklch(0.26 0.015 210);
+  --sidebar-accent-foreground: oklch(0.87 0.035 202);
+  --sidebar-border: oklch(1 0 0 / 8%);
+  --primary: oklch(0.72 0.082 205);
+  --primary-foreground: oklch(0.17 0.025 218);
+  --primary-hover: oklch(0.78 0.08 205);
+  --primary-soft: oklch(0.72 0.082 205 / 0.15);
+  --primary-soft-2: oklch(0.72 0.082 205 / 0.25);
+  --ring: oklch(0.6 0.07 210);
+}
+
+/* ============ base ============ */
+body { margin: 0; background: var(--background); }
+.cx-app, .cx-app * { box-sizing: border-box; }
+.cx-app {
+  display: flex;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01", "cv11";
+}
+.cx-app ::selection { background: color-mix(in oklab, var(--primary) 18%, transparent); }
+/* :where() mantiene especificidad 0 en el reset — los .btn-* deben ganarle */
+:where(.cx-app) button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; padding: 0; }
+.cx-app h1, .cx-app h2, .cx-app h3 { letter-spacing: -0.01em; margin: 0; }
+.cx-app p { margin: 0; }
+.nums { font-variant-numeric: tabular-nums lining-nums; }
+
+/* scrollbars discretos (como globals.css) */
+.cx-app * { scrollbar-width: thin; scrollbar-color: oklch(0.65 0.01 80 / 0.35) transparent; }
+.cx-app *::-webkit-scrollbar { width: 8px; height: 8px; }
+.cx-app *::-webkit-scrollbar-thumb { background: oklch(0.65 0.01 80 / 0.3); border-radius: 999px; }
+.cx-app *::-webkit-scrollbar-track { background: transparent; }
+
+.icon { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.icon-sm { width: 14px; height: 14px; }
+.icon-xs { width: 12px; height: 12px; }
+
+/* ============ 1 · sidebar app ============ */
+.cx-nav {
+  width: 232px; flex: none;
+  display: flex; flex-direction: column;
+  background: var(--sidebar); color: var(--sidebar-foreground);
+  border-right: 1px solid var(--sidebar-border);
+}
+.cx-nav-logo {
+  display: flex; align-items: center; gap: 9px;
+  height: 56px; padding: 0 16px; flex: none;
+  border-bottom: 1px solid var(--sidebar-border);
+  font-weight: 600; font-size: 14px; color: var(--foreground);
+}
+.cx-nav-logo .logo-box {
+  width: 30px; height: 30px; border-radius: var(--radius-lg);
+  background: var(--primary); color: var(--primary-foreground);
+  display: grid; place-items: center;
+}
+.cx-nav ul { list-style: none; margin: 0; padding: 14px 12px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.cx-nav a, .cx-nav .navitem {
+  display: flex; align-items: center; gap: 11px;
+  padding: 8px 11px; border-radius: var(--radius-lg);
+  font-size: 13.5px; font-weight: 500; color: var(--muted-foreground);
+  text-decoration: none; transition: background .2s ease-out, color .2s ease-out;
+  width: 100%; text-align: left;
+}
+.cx-nav .navitem:hover { background: var(--muted); color: var(--foreground); }
+.cx-nav .navitem.active { background: var(--primary-soft); color: var(--primary); }
+.cx-nav .navitem .spacer { flex: 1; }
+.cx-nav .chip-new {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 999px;
+  background: var(--primary-soft-2); color: var(--primary);
+}
+.cx-nav-sep { border: none; border-top: 1px solid var(--sidebar-border); margin: 10px 0; }
+.cx-nav-user {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; border-top: 1px solid var(--sidebar-border);
+}
+.cx-avatar {
+  width: 32px; height: 32px; border-radius: 999px; flex: none;
+  background: var(--primary-soft); color: var(--primary);
+  display: grid; place-items: center; font-size: 13px; font-weight: 600;
+}
+.cx-nav-user .who { min-width: 0; }
+.cx-nav-user .who b { display: block; font-size: 13px; font-weight: 600; color: var(--foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cx-nav-user .who span { display: block; font-size: 11.5px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ============ 2 · sesiones ============ */
+.cx-sessions {
+  width: 256px; flex: none;
+  display: flex; flex-direction: column;
+  background: var(--card-2);
+  border-right: 1px solid var(--border);
+}
+.cx-sessions-head { padding: 12px; flex: none; }
+.btn-new {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; height: 36px;
+  border-radius: var(--radius-lg);
+  background: var(--primary); color: var(--primary-foreground);
+  font-size: 13px; font-weight: 600;
+  box-shadow: var(--shadow-soft);
+  transition: background .2s ease-out, transform .1s ease-out;
+}
+.btn-new:hover { background: var(--primary-hover); }
+.btn-new:active { transform: translateY(1px); }
+.cx-sessions-list { flex: 1; overflow-y: auto; padding: 2px 12px 12px; }
+.cx-sess-group { font-size: 10.5px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted-foreground); padding: 12px 8px 6px; }
+.cx-sess {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; text-align: left;
+  padding: 8px 10px; border-radius: var(--radius-lg);
+  color: var(--foreground); font-size: 13px;
+  transition: background .2s ease-out;
+}
+.cx-sess:hover { background: var(--muted); }
+.cx-sess.active { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
+.cx-sess .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cx-sess .when { font-size: 11px; color: var(--muted-foreground); flex: none; font-weight: 400; }
+.cx-sess.active .when { color: var(--primary); opacity: .75; }
+
+/* ============ 3 · chat ============ */
+.cx-chat { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--background); }
+.cx-chat-head {
+  flex: none; height: 56px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 0 20px; border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+.cx-chat-head .tt { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.cx-chat-head .tt .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--success); animation: pulse-dot 2s cubic-bezier(.4,0,.6,1) infinite; }
+.cx-chat-head h1 { font-size: 15.5px; font-weight: 650; }
+.cx-chat-head .sub { font-size: 12px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cx-head-actions { display: flex; align-items: center; gap: 8px; }
+
+/* toggle de voz */
+.voice-toggle {
+  display: flex; align-items: center; gap: 8px;
+  height: 32px; padding: 0 4px 0 10px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--card); color: var(--muted-foreground);
+  font-size: 12.5px; font-weight: 550;
+  transition: all .2s ease-out;
+}
+.voice-toggle[aria-checked="true"] { color: var(--primary); border-color: color-mix(in oklab, var(--primary) 35%, transparent); background: var(--primary-soft); }
+.voice-toggle .sw { width: 30px; height: 18px; border-radius: 999px; background: var(--input); position: relative; transition: background .2s ease-out; }
+.voice-toggle[aria-checked="true"] .sw { background: var(--primary); }
+.voice-toggle .knob { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 999px; background: var(--card); box-shadow: var(--shadow-soft); transition: transform .2s ease-out; }
+.voice-toggle[aria-checked="true"] .knob { transform: translateX(12px); background: var(--primary-foreground); }
+
+.icon-btn {
+  width: 34px; height: 34px; flex: none;
+  display: grid; place-items: center;
+  border-radius: var(--radius-lg); color: var(--muted-foreground);
+  transition: background .2s ease-out, color .2s ease-out;
+}
+.icon-btn:hover { background: var(--muted); color: var(--foreground); }
+
+/* -------- transcript -------- */
+.cx-thread { flex: 1; overflow-y: auto; overflow-x: hidden; }
+.cx-thread-inner { max-width: 46rem; margin: 0 auto; padding: 28px 20px 16px; display: flex; flex-direction: column; gap: 26px; }
+
+.day-sep { display: flex; align-items: center; gap: 12px; color: var(--muted-foreground); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.day-sep::before, .day-sep::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+
+.msg { display: flex; gap: 12px; animation: fade-up .35s cubic-bezier(.21,1.02,.73,1) both; }
+.msg-user { justify-content: flex-end; }
+.msg-user .stack { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; max-width: 78%; }
+.bubble {
+  background: var(--primary); color: var(--primary-foreground);
+  border-radius: var(--radius-2xl); border-bottom-right-radius: var(--radius-sm);
+  padding: 9px 14px; font-size: 14px;
+}
+.msg-user .meta { font-size: 11px; color: var(--muted-foreground); padding-right: 4px; }
+
+/* burbuja de audio */
+.bubble-audio { display: flex; align-items: center; gap: 10px; padding: 9px 14px 9px 9px; min-width: 230px; }
+.audio-play {
+  width: 30px; height: 30px; flex: none; border-radius: 999px;
+  background: oklch(1 0 0 / 0.18); color: var(--primary-foreground);
+  display: grid; place-items: center;
+  transition: background .2s ease-out;
+}
+.audio-play:hover { background: oklch(1 0 0 / 0.3); }
+.wave { display: flex; align-items: center; gap: 2px; height: 22px; flex: 1; }
+.wave i {
+  width: 3px; border-radius: 999px; background: oklch(1 0 0 / 0.55);
+  height: calc(4px + var(--h) * 16px);
+}
+.bubble-audio.playing .wave i { animation: eq 0.9s ease-in-out calc(var(--h) * -1s) infinite alternate; }
+.audio-dur { font-size: 11.5px; opacity: .85; }
+.transcript { font-size: 12px; color: var(--muted-foreground); font-style: italic; text-align: right; max-width: 100%; }
+.transcript .icon-xs { vertical-align: -1px; margin-right: 3px; }
+
+/* asistente: plano, con avatar */
+.msg-ai .ai-avatar {
+  width: 30px; height: 30px; flex: none; margin-top: 2px;
+  border-radius: 999px; background: var(--primary-soft); color: var(--primary);
+  display: grid; place-items: center;
+}
+.msg-ai .body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 12px; }
+.msg-ai .body > p { font-size: 14px; }
+.msg-ai .body b { font-weight: 600; }
+
+/* acciones por mensaje */
+.msg-actions { display: flex; align-items: center; gap: 2px; margin-top: -4px; opacity: 0; transition: opacity .2s ease-out; }
+.msg-ai:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
+.msg-actions .icon-btn { width: 28px; height: 28px; border-radius: var(--radius-md); }
+.msg-actions .eq { display: none; align-items: flex-end; gap: 2px; height: 14px; margin-left: 4px; }
+.msg-actions .eq i { width: 3px; border-radius: 999px; background: var(--primary); animation: eq .8s ease-in-out infinite alternate; }
+.msg-actions .eq i:nth-child(1) { height: 6px; animation-delay: -.2s; }
+.msg-actions .eq i:nth-child(2) { height: 12px; animation-delay: -.5s; }
+.msg-actions .eq i:nth-child(3) { height: 8px; animation-delay: -.8s; }
+.msg-actions.speaking { opacity: 1; }
+.msg-actions.speaking .eq { display: flex; }
+.msg-actions.speaking .tts-btn { color: var(--primary); background: var(--primary-soft); }
+
+/* -------- bloque estructurado: tabla de agenda -------- */
+.block-card {
+  border: 1px solid var(--border); border-radius: var(--radius-xl);
+  background: var(--card); box-shadow: var(--shadow-soft);
+  overflow: hidden;
+}
+.block-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  background: var(--card-2);
+  font-size: 12.5px; font-weight: 600;
+}
+.block-head .icon { color: var(--primary); }
+.block-head .count { margin-left: auto; font-weight: 500; font-size: 11.5px; color: var(--muted-foreground); }
+.table-scroll { overflow-x: auto; }
+table.agenda { border-collapse: collapse; width: 100%; min-width: 480px; font-size: 13px; }
+.agenda th {
+  text-align: left; font-size: 10.5px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted-foreground); padding: 8px 14px; border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.agenda td { padding: 9px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.agenda tr:last-child td { border-bottom: none; }
+.agenda tbody tr { transition: background .15s ease-out; }
+.agenda tbody tr:hover { background: var(--muted); cursor: pointer; }
+.agenda .hora { font-weight: 600; }
+.agenda .pt { font-weight: 550; }
+.agenda .tipo { color: var(--muted-foreground); }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 600; padding: 2.5px 9px; border-radius: 999px;
+  white-space: nowrap;
+}
+.chip::before { content: ""; width: 5px; height: 5px; border-radius: 999px; background: currentColor; }
+.chip.ok { background: color-mix(in oklab, var(--success) 13%, transparent); color: var(--success); }
+.chip.warn { background: color-mix(in oklab, var(--warning) 16%, transparent); color: color-mix(in oklab, var(--warning) 55%, var(--foreground)); }
+.chip.mute { background: var(--muted); color: var(--muted-foreground); }
+.chip.mute::before { display: none; }
+.block-foot { display: flex; justify-content: flex-end; padding: 8px 14px; border-top: 1px solid var(--border); background: var(--card-2); }
+.linklike { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--primary); border-radius: var(--radius-md); padding: 3px 6px; transition: background .2s ease-out; }
+.linklike:hover { background: var(--primary-soft); }
+
+/* -------- action card -------- */
+.action-card {
+  border: 1px solid var(--border); border-radius: var(--radius-xl);
+  background: var(--card); box-shadow: var(--shadow-soft);
+  overflow: hidden; max-width: 480px;
+  transition: box-shadow .2s ease-out, border-color .2s ease-out;
+}
+.action-card[data-state="proposed"] { border-color: color-mix(in oklab, var(--primary) 32%, var(--border)); box-shadow: var(--shadow-lifted); }
+.ac-head { display: flex; align-items: center; gap: 11px; padding: 13px 15px 11px; }
+.ac-ico {
+  width: 34px; height: 34px; flex: none; border-radius: var(--radius-lg);
+  display: grid; place-items: center;
+  background: var(--primary-soft); color: var(--primary);
+}
+.ac-head .w { min-width: 0; flex: 1; }
+.ac-title { font-size: 13.5px; font-weight: 650; }
+.ac-sub { font-size: 12px; color: var(--muted-foreground); margin-top: 1px; }
+.ac-state {
+  flex: none; font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 999px;
+}
+.action-card[data-state="proposed"]  .ac-state { background: var(--primary-soft); color: var(--primary); }
+.action-card[data-state="executing"] .ac-state { background: var(--muted); color: var(--muted-foreground); }
+.action-card[data-state="executed"]  .ac-state { background: color-mix(in oklab, var(--success) 14%, transparent); color: var(--success); }
+.action-card[data-state="cancelled"] .ac-state { background: var(--muted); color: var(--muted-foreground); }
+.ac-details { margin: 0 15px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card-2); overflow: hidden; }
+.ac-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 13px; }
+.ac-row + .ac-row { border-top: 1px solid var(--border); }
+.ac-row .k { width: 88px; flex: none; font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--muted-foreground); }
+.ac-row .v { font-weight: 550; }
+.ac-row .v.old { color: var(--muted-foreground); text-decoration: line-through; text-decoration-color: color-mix(in oklab, var(--destructive) 55%, transparent); font-weight: 450; }
+.ac-row .v.new { color: var(--primary); background: var(--primary-soft); padding: 1.5px 9px; border-radius: 999px; }
+.file-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 550; color: var(--accent-foreground); background: var(--accent); border-radius: var(--radius-md); padding: 3px 9px; }
+.ac-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 15px 13px; flex-wrap: wrap; }
+.ac-note { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted-foreground); }
+.ac-note .icon-sm { color: var(--warning); }
+.ac-buttons { display: flex; gap: 8px; margin-left: auto; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 32px; padding: 0 14px; border-radius: var(--radius-lg);
+  font-size: 13px; font-weight: 600;
+  transition: all .2s ease-out; border: 1px solid transparent;
+}
+.btn:active { transform: translateY(1px); }
+.btn-primary { background: var(--primary); color: var(--primary-foreground); box-shadow: var(--shadow-soft); }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-ghost { color: var(--muted-foreground); }
+.btn-ghost:hover { background: var(--muted); color: var(--foreground); }
+/* estado executing */
+.ac-exec { display: none; align-items: center; gap: 9px; padding: 12px 15px 13px; font-size: 13px; color: var(--muted-foreground); }
+.spinner { width: 15px; height: 15px; flex: none; border-radius: 999px; border: 2px solid var(--border); border-top-color: var(--primary); animation: spin .7s linear infinite; }
+/* estado executed */
+.ac-done {
+  display: none; align-items: center; gap: 9px;
+  margin: 0 15px 13px; padding: 9px 12px;
+  border-radius: var(--radius-lg);
+  background: color-mix(in oklab, var(--success) 10%, transparent);
+  color: var(--success); font-size: 12.5px; font-weight: 550;
+}
+.ac-done .check-ico { width: 20px; height: 20px; flex: none; border-radius: 999px; background: var(--success); color: var(--success-foreground); display: grid; place-items: center; }
+.ac-done .sub2 { display: block; font-size: 11px; font-weight: 450; color: color-mix(in oklab, var(--success) 72%, var(--foreground)); }
+.ac-cancel-note { display: none; padding: 12px 15px 13px; font-size: 12.5px; color: var(--muted-foreground); }
+.action-card[data-state="executing"] .ac-foot, .action-card[data-state="executed"] .ac-foot, .action-card[data-state="cancelled"] .ac-foot { display: none; }
+.action-card[data-state="executing"] .ac-exec { display: flex; }
+.action-card[data-state="executed"] .ac-done { display: flex; }
+.action-card[data-state="cancelled"] .ac-cancel-note { display: block; }
+.action-card[data-state="cancelled"] { opacity: .65; }
+
+/* typing */
+.typing { display: inline-flex; gap: 4px; align-items: center; padding: 4px 0; }
+.typing i { width: 6px; height: 6px; border-radius: 999px; background: var(--muted-foreground); animation: blink 1.2s ease-in-out infinite; }
+.typing i:nth-child(2) { animation-delay: .18s; }
+.typing i:nth-child(3) { animation-delay: .36s; }
+
+/* -------- composer -------- */
+.cx-composer-wrap { flex: none; padding: 10px 20px 14px; background: linear-gradient(to top, var(--background) 65%, transparent); }
+.cx-composer-inner { max-width: 46rem; margin: 0 auto; }
+.composer {
+  display: flex; align-items: flex-end; gap: 6px;
+  border: 1px solid var(--input); border-radius: var(--radius-2xl);
+  background: var(--card); box-shadow: var(--shadow-soft);
+  padding: 8px 8px 8px 10px;
+  transition: border-color .2s ease-out, box-shadow .2s ease-out;
+}
+.composer:focus-within { border-color: color-mix(in oklab, var(--ring) 60%, transparent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 18%, transparent), var(--shadow-soft); }
+.composer textarea {
+  flex: 1; resize: none; border: none; outline: none; background: transparent;
+  color: var(--foreground); font-family: inherit; font-size: 14px; line-height: 1.5;
+  padding: 6px 4px; max-height: 160px; min-height: 24px;
+}
+.composer textarea::placeholder { color: var(--muted-foreground); }
+.composer .icon-btn { width: 36px; height: 36px; border-radius: var(--radius-xl); }
+.send-btn {
+  width: 36px; height: 36px; flex: none;
+  display: grid; place-items: center;
+  border-radius: var(--radius-xl);
+  background: var(--primary); color: var(--primary-foreground);
+  box-shadow: var(--shadow-soft);
+  transition: all .2s ease-out;
+}
+.send-btn:hover { background: var(--primary-hover); }
+.send-btn:disabled { opacity: .4; cursor: default; }
+.composer-hint { text-align: center; font-size: 11px; color: var(--muted-foreground); margin-top: 8px; }
+.composer-hint b { font-weight: 600; }
+/* grabando */
+.composer.recording .icon-btn.mic { background: color-mix(in oklab, var(--destructive) 12%, transparent); color: var(--destructive); }
+.rec-live { display: none; flex: 1; align-items: center; gap: 10px; padding: 4px 6px; }
+.composer.recording .rec-live { display: flex; }
+.composer.recording textarea, .composer.recording .attach { display: none; }
+.rec-dot { width: 9px; height: 9px; border-radius: 999px; background: var(--destructive); animation: pulse-dot 1.4s cubic-bezier(.4,0,.6,1) infinite; }
+.rec-wave { display: flex; align-items: center; gap: 2px; height: 24px; flex: 1; overflow: hidden; }
+.rec-wave i { width: 3px; border-radius: 999px; background: color-mix(in oklab, var(--destructive) 70%, var(--foreground)); animation: eq .7s ease-in-out infinite alternate; }
+.rec-time { font-size: 12.5px; font-weight: 600; color: var(--destructive); }
+
+/* ============ animaciones ============ */
+@keyframes pulse-dot { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .55; transform: scale(.82); } }
+@keyframes fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes eq { from { transform: scaleY(.35); } to { transform: scaleY(1); } }
+@keyframes blink { 0%,80%,100% { opacity: .25; } 40% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .cx-app * { animation: none !important; transition: none !important; }
+}
+
+/* ============ responsive ============ */
+@media (max-width: 1120px) { .cx-nav { display: none; } }
+@media (max-width: 880px)  { .cx-sessions { display: none; } }
+@media (max-width: 560px)  {
+  .cx-thread-inner { padding: 20px 12px 10px; }
+  .cx-composer-wrap { padding: 8px 12px 10px; }
+  .cx-chat-head { padding: 0 12px; }
+  .cx-chat-head .sub { display: none; }
+  .msg-user .stack { max-width: 92%; }
+}
+</style>
+
+<div class="cx-app">
+
+  <!-- ═══════ Sidebar de la app (nav real de clinicOS + Concierge) ═══════ -->
+  <aside class="cx-nav" aria-label="Navegación principal">
+    <div class="cx-nav-logo">
+      <span class="logo-box">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M9.9 3.6 11.2 7a1 1 0 0 0 .6.6l3.4 1.3a1 1 0 0 1 0 1.9L11.8 12a1 1 0 0 0-.6.6l-1.3 3.4a1 1 0 0 1-1.9 0L6.7 12.7a1 1 0 0 0-.6-.6L2.7 10.8a1 1 0 0 1 0-1.9L6.1 7.6a1 1 0 0 0 .6-.6L8 3.6a1 1 0 0 1 1.9 0Z"/><path d="M18 13.5l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8Z"/></svg>
+      </span>
+      clinicOS
+    </div>
+    <ul>
+      <li><button class="navitem active">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M9.9 3.6 11.2 7a1 1 0 0 0 .6.6l3.4 1.3a1 1 0 0 1 0 1.9L11.8 12a1 1 0 0 0-.6.6l-1.3 3.4a1 1 0 0 1-1.9 0L6.7 12.7a1 1 0 0 0-.6-.6L2.7 10.8a1 1 0 0 1 0-1.9L6.1 7.6a1 1 0 0 0 .6-.6L8 3.6a1 1 0 0 1 1.9 0Z"/><path d="M18 13.5l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8Z"/></svg>
+        Concierge <span class="spacer"></span><span class="chip-new">Nuevo</span>
+      </button></li>
+      <li><button class="navitem">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Conversaciones
+      </button></li>
+      <li><button class="navitem">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        CRM
+      </button></li>
+      <li><button class="navitem">
+        <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>
+        Calendario
+      </button></li>
+      <li><button class="navitem">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+        Notificaciones
+      </button></li>
+      <li aria-hidden="true"><hr class="cx-nav-sep"></li>
+      <li><button class="navitem">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+        Configuración
+      </button></li>
+    </ul>
+    <div class="cx-nav-user">
+      <span class="cx-avatar">Z</span>
+      <div class="who"><b>Dr. Zavala</b><span>Clínica Dental Oranza</span></div>
+    </div>
+  </aside>
+
+  <!-- ═══════ Lista de sesiones ═══════ -->
+  <aside class="cx-sessions" aria-label="Historial de conversaciones">
+    <div class="cx-sessions-head">
+      <button class="btn-new">
+        <svg class="icon-sm icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        Nueva conversación
+      </button>
+    </div>
+    <div class="cx-sessions-list">
+      <div class="cx-sess-group">Hoy</div>
+      <button class="cx-sess active"><span class="t">Agenda y reagendado</span><span class="when nums">9:41</span></button>
+      <button class="cx-sess"><span class="t">Anticipos por revisar</span><span class="when nums">8:15</span></button>
+      <div class="cx-sess-group">Ayer</div>
+      <button class="cx-sess"><span class="t">Embudo — leads fríos de junio</span><span class="when">Lun</span></button>
+      <button class="cx-sess"><span class="t">Nota postoperatorio Miguel T.</span><span class="when">Lun</span></button>
+      <div class="cx-sess-group">Últimos 7 días</div>
+      <button class="cx-sess"><span class="t">Precios de blanqueamiento</span><span class="when">Vie</span></button>
+      <button class="cx-sess"><span class="t">Bloquear agenda del viernes</span><span class="when">Jue</span></button>
+      <button class="cx-sess"><span class="t">Expediente de Paola Gutiérrez</span><span class="when">Mié</span></button>
+    </div>
+  </aside>
+
+  <!-- ═══════ Chat ═══════ -->
+  <main class="cx-chat">
+    <header class="cx-chat-head">
+      <div class="tt">
+        <span class="dot" aria-hidden="true"></span>
+        <div>
+          <h1>Concierge</h1>
+          <div class="sub">Tu clínica, en una conversación — Clínica Dental Oranza</div>
+        </div>
+      </div>
+      <div class="cx-head-actions">
+        <button class="voice-toggle" id="voiceToggle" role="switch" aria-checked="true" title="Leer respuestas en voz alta">
+          <svg class="icon-sm icon" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.8 5.8a9 9 0 0 1 0 12.4"/></svg>
+          Voz
+          <span class="sw"><span class="knob"></span></span>
+        </button>
+        <button class="icon-btn" title="Más opciones" aria-label="Más opciones">
+          <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="cx-thread" id="thread">
+      <div class="cx-thread-inner">
+
+        <div class="day-sep">Hoy · martes 7 de julio</div>
+
+        <!-- 1 · usuario -->
+        <div class="msg msg-user">
+          <div class="stack">
+            <div class="bubble">¿Cómo va el día?</div>
+            <span class="meta nums">9:38</span>
+          </div>
+        </div>
+
+        <!-- 2 · asistente: agenda -->
+        <div class="msg msg-ai">
+          <span class="ai-avatar"><svg class="icon" viewBox="0 0 24 24"><path d="M9.9 3.6 11.2 7a1 1 0 0 0 .6.6l3.4 1.3a1 1 0 0 1 0 1.9L11.8 12a1 1 0 0 0-.6.6l-1.3 3.4a1 1 0 0 1-1.9 0L6.7 12.7a1 1 0 0 0-.6-.6L2.7 10.8a1 1 0 0 1 0-1.9L6.1 7.6a1 1 0 0 0 .6-.6L8 3.6a1 1 0 0 1 1.9 0Z"/><path d="M18 13.5l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8Z"/></svg></span>
+          <div class="body">
+            <p>Buen día, doctor. Hoy tienes <b>5 citas</b>: 3 confirmadas, 2 pendientes de confirmar y <b>1 anticipo en revisión</b> (Karla Ortiz). Tu primera cita es a las 9:00.</p>
+            <div class="block-card">
+              <div class="block-head">
+                <svg class="icon-sm icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+                Agenda de hoy
+                <span class="count">5 citas · mar 7 jul</span>
+              </div>
+              <div class="table-scroll">
+                <table class="agenda">
+                  <thead><tr><th>Hora</th><th>Paciente</th><th>Tipo</th><th>Estado</th><th>Anticipo</th></tr></thead>
+                  <tbody>
+                    <tr><td class="hora nums">9:00</td><td class="pt">Karla Ortiz</td><td class="tipo">Limpieza dental</td><td><span class="chip ok">Confirmada</span></td><td><span class="chip warn">En revisión</span></td></tr>
+                    <tr><td class="hora nums">10:30</td><td class="pt">Miguel Á. Torres</td><td class="tipo">Endodoncia</td><td><span class="chip ok">Confirmada</span></td><td><span class="chip ok">Pagado</span></td></tr>
+                    <tr><td class="hora nums">12:00</td><td class="pt">Laura Medina</td><td class="tipo">Valoración</td><td><span class="chip warn">Pendiente</span></td><td><span class="chip warn">$800 pendiente</span></td></tr>
+                    <tr><td class="hora nums">16:00</td><td class="pt">Rodrigo Sáenz</td><td class="tipo">Blanqueamiento</td><td><span class="chip ok">Confirmada</span></td><td><span class="chip ok">Pagado</span></td></tr>
+                    <tr><td class="hora nums">17:30</td><td class="pt">Paola Gutiérrez</td><td class="tipo">Seguimiento</td><td><span class="chip warn">Pendiente</span></td><td><span class="chip mute">No aplica</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="block-foot">
+                <button class="linklike">Abrir en Calendario
+                  <svg class="icon-xs icon" viewBox="0 0 24 24"><path d="M7 17 17 7M7 7h10v10"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="msg-actions">
+              <button class="icon-btn tts-btn" title="Escuchar respuesta" aria-label="Escuchar respuesta"><svg class="icon-sm icon" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg></button>
+              <button class="icon-btn" title="Copiar" aria-label="Copiar"><svg class="icon-sm icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+              <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3 · usuario: pide validar anticipo -->
+        <div class="msg msg-user">
+          <div class="stack">
+            <div class="bubble">Ya revisé el comprobante de Karla, valida su anticipo.</div>
+            <span class="meta nums">9:40</span>
+          </div>
+        </div>
+
+        <!-- 4 · asistente: acción ejecutada (check) -->
+        <div class="msg msg-ai">
+          <span class="ai-avatar"><svg class="icon" viewBox="0 0 24 24"><path d="M9.9 3.6 11.2 7a1 1 0 0 0 .6.6l3.4 1.3a1 1 0 0 1 0 1.9L11.8 12a1 1 0 0 0-.6.6l-1.3 3.4a1 1 0 0 1-1.9 0L6.7 12.7a1 1 0 0 0-.6-.6L2.7 10.8a1 1 0 0 1 0-1.9L6.1 7.6a1 1 0 0 0 .6-.6L8 3.6a1 1 0 0 1 1.9 0Z"/><path d="M18 13.5l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8Z"/></svg></span>
+          <div class="body">
+            <p>Aquí está el anticipo pendiente de Karla. Lo confirmaste a las <b>9:42</b>:</p>
+            <div class="action-card" data-state="executed">
+              <div class="ac-head">
+                <span class="ac-ico"><svg class="icon" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg></span>
+                <div class="w">
+                  <div class="ac-title">Validar anticipo</div>
+                  <div class="ac-sub">Karla Ortiz · Limpieza dental · hoy 9:00</div>
+                </div>
+                <span class="ac-state">Hecho</span>
+              </div>
+              <div class="ac-details">
+                <div class="ac-row"><span class="k">Monto</span><span class="v nums">$800.00 MXN · Transferencia</span></div>
+                <div class="ac-row"><span class="k">Comprobante</span>
+                  <span class="file-chip"><svg class="icon-xs icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>comprobante-karla.jpg</span>
+                </div>
+                <div class="ac-row"><span class="k">Efecto</span><span class="v">Pago confirmado + cita con anticipo pagado</span></div>
+              </div>
+              <div class="ac-done" style="display:flex">
+                <span class="check-ico"><svg class="icon-xs icon" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
+                <span>Anticipo confirmado
+                  <span class="sub2">hoy 9:42 · confirmado por Dr. Zavala</span>
+                </span>
+              </div>
+            </div>
+            <p>Listo — le avisé al equipo y la cita de las 9:00 ya aparece con el anticipo pagado. ¿Algo más con la agenda?</p>
+            <div class="msg-actions">
+              <button class="icon-btn tts-btn" title="Escuchar respuesta" aria-label="Escuchar respuesta"><svg class="icon-sm icon" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg></button>
+              <button class="icon-btn" title="Copiar" aria-label="Copiar"><svg class="icon-sm icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+              <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5 · usuario: audio -->
+        <div class="msg msg-user">
+          <div class="stack">
+            <div class="bubble bubble-audio" id="audioMsg">
+              <button class="audio-play" title="Reproducir audio" aria-label="Reproducir audio">
+                <svg class="icon-sm icon play-i" viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M8 5.5v13a.6.6 0 0 0 .9.5l10.4-6.5a.6.6 0 0 0 0-1L8.9 5a.6.6 0 0 0-.9.5Z"/></svg>
+                <svg class="icon-sm icon pause-i" viewBox="0 0 24 24" style="display:none;fill:currentColor;stroke:none"><rect x="7" y="5" width="3.5" height="14" rx="1"/><rect x="13.5" y="5" width="3.5" height="14" rx="1"/></svg>
+              </button>
+              <span class="wave" aria-hidden="true">
+                <i style="--h:.25"></i><i style="--h:.55"></i><i style="--h:.9"></i><i style="--h:.5"></i><i style="--h:.75"></i><i style="--h:1"></i><i style="--h:.45"></i><i style="--h:.8"></i><i style="--h:.35"></i><i style="--h:.65"></i><i style="--h:.95"></i><i style="--h:.4"></i><i style="--h:.7"></i><i style="--h:.3"></i><i style="--h:.85"></i><i style="--h:.5"></i><i style="--h:.2"></i><i style="--h:.6"></i><i style="--h:.4"></i><i style="--h:.25"></i>
+              </span>
+              <span class="audio-dur nums">0:07</span>
+            </div>
+            <span class="transcript">
+              <svg class="icon-xs icon" viewBox="0 0 24 24" style="display:inline"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>
+              «Oye, la valoración de Laura Medina de hoy a las doce… mejor pásamela al viernes a las diez, me avisó que no alcanza a llegar.»
+            </span>
+            <span class="meta nums">9:43</span>
+          </div>
+        </div>
+
+        <!-- 6 · asistente: propuesta de reagendado -->
+        <div class="msg msg-ai">
+          <span class="ai-avatar"><svg class="icon" viewBox="0 0 24 24"><path d="M9.9 3.6 11.2 7a1 1 0 0 0 .6.6l3.4 1.3a1 1 0 0 1 0 1.9L11.8 12a1 1 0 0 0-.6.6l-1.3 3.4a1 1 0 0 1-1.9 0L6.7 12.7a1 1 0 0 0-.6-.6L2.7 10.8a1 1 0 0 1 0-1.9L6.1 7.6a1 1 0 0 0 .6-.6L8 3.6a1 1 0 0 1 1.9 0Z"/><path d="M18 13.5l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8Z"/></svg></span>
+          <div class="body">
+            <p>Claro. Revisé la agenda: el <b>viernes 10 a las 10:00</b> está libre. Te propongo el cambio — Laura conserva su anticipo pendiente de $800:</p>
+            <div class="action-card" data-state="proposed" id="rescheduleCard">
+              <div class="ac-head">
+                <span class="ac-ico"><svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="m9 16 2 2 4-4"/></svg></span>
+                <div class="w">
+                  <div class="ac-title">Reagendar cita</div>
+                  <div class="ac-sub">Laura Medina · Valoración (60 min)</div>
+                </div>
+                <span class="ac-state">Propuesta</span>
+              </div>
+              <div class="ac-details">
+                <div class="ac-row"><span class="k">Actual</span><span class="v old">Hoy · mar 7 jul · 12:00</span></div>
+                <div class="ac-row"><span class="k">Nueva</span><span class="v new">Vie 10 jul · 10:00</span></div>
+                <div class="ac-row"><span class="k">Notas</span><span class="v" style="font-weight:450">La paciente avisó que hoy no alcanza a llegar.</span></div>
+              </div>
+              <div class="ac-foot">
+                <span class="ac-note">
+                  <svg class="icon-sm icon" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>
+                  No se ejecuta hasta que confirmes.
+                </span>
+                <div class="ac-buttons">
+                  <button class="btn btn-ghost" data-act="cancel">Cancelar</button>
+                  <button class="btn btn-primary" data-act="confirm">
+                    <svg class="icon-sm icon" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>
+                    Confirmar
+                  </button>
+                </div>
+              </div>
+              <div class="ac-exec"><span class="spinner"></span> Ejecutando… moviendo la cita en el calendario.</div>
+              <div class="ac-done">
+                <span class="check-ico"><svg class="icon-xs icon" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
+                <span>Cita reagendada al vie 10 jul · 10:00
+                  <span class="sub2">justo ahora · confirmado por Dr. Zavala</span>
+                </span>
+              </div>
+              <div class="ac-cancel-note">Propuesta cancelada — no se hizo ningún cambio en el calendario.</div>
+            </div>
+            <p id="afterConfirmText" style="display:none">Hecho ✓ — moví la cita de Laura al <b>viernes 10 a las 10:00</b>. ¿Quieres que le avise por WhatsApp con el recordatorio de su anticipo?</p>
+            <div class="msg-actions">
+              <button class="icon-btn tts-btn" title="Escuchar respuesta" aria-label="Escuchar respuesta"><svg class="icon-sm icon" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg></button>
+              <button class="icon-btn" title="Copiar" aria-label="Copiar"><svg class="icon-sm icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+              <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ═══════ Composer ═══════ -->
+    <div class="cx-composer-wrap">
+      <div class="cx-composer-inner">
+        <div class="composer" id="composer">
+          <button class="icon-btn attach" title="Adjuntar imagen o PDF" aria-label="Adjuntar archivo">
+            <svg class="icon" viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          </button>
+          <textarea id="input" rows="1" placeholder="Escribe o dicta una instrucción para tu clínica…" aria-label="Mensaje para el concierge"></textarea>
+          <div class="rec-live" aria-hidden="true">
+            <span class="rec-dot"></span>
+            <span class="rec-wave">
+              <i style="height:8px;animation-delay:-.1s"></i><i style="height:16px;animation-delay:-.3s"></i><i style="height:11px;animation-delay:-.5s"></i><i style="height:20px;animation-delay:-.2s"></i><i style="height:9px;animation-delay:-.6s"></i><i style="height:15px;animation-delay:-.4s"></i><i style="height:22px;animation-delay:-.15s"></i><i style="height:12px;animation-delay:-.55s"></i><i style="height:18px;animation-delay:-.35s"></i><i style="height:8px;animation-delay:-.05s"></i><i style="height:14px;animation-delay:-.45s"></i><i style="height:19px;animation-delay:-.25s"></i><i style="height:10px;animation-delay:-.65s"></i><i style="height:16px;animation-delay:-.12s"></i>
+            </span>
+            <span class="rec-time nums" id="recTime">0:03</span>
+          </div>
+          <button class="icon-btn mic" id="micBtn" title="Dictar (clic para iniciar/detener)" aria-label="Grabar audio">
+            <svg class="icon mic-i" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>
+            <svg class="icon stop-i" viewBox="0 0 24 24" style="display:none;fill:currentColor;stroke:none"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          </button>
+          <button class="send-btn" id="sendBtn" disabled title="Enviar" aria-label="Enviar mensaje">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
+          </button>
+        </div>
+        <p class="composer-hint">El concierge <b>propone</b> las acciones — tú las <b>confirmas</b>. · <span class="nums">Enter</span> envía, <span class="nums">Shift+Enter</span> salto de línea</p>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+(function () {
+  // ---- textarea autosize + habilitar enviar ----
+  var input = document.getElementById('input');
+  var sendBtn = document.getElementById('sendBtn');
+  function sync() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+    sendBtn.disabled = input.value.trim().length === 0;
+  }
+  input.addEventListener('input', sync);
+  sync();
+
+  // ---- toggle de voz ----
+  var vt = document.getElementById('voiceToggle');
+  vt.addEventListener('click', function () {
+    vt.setAttribute('aria-checked', vt.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+  });
+
+  // ---- action card: confirmar / cancelar (demo de estados) ----
+  var card = document.getElementById('rescheduleCard');
+  var after = document.getElementById('afterConfirmText');
+  card.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    if (btn.dataset.act === 'cancel') { card.dataset.state = 'cancelled'; return; }
+    card.dataset.state = 'executing';
+    setTimeout(function () {
+      card.dataset.state = 'executed';
+      after.style.display = '';
+      after.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 1100);
+  });
+
+  // ---- reproducir audio del usuario (demo) ----
+  var audio = document.getElementById('audioMsg');
+  audio.querySelector('.audio-play').addEventListener('click', function () {
+    var playing = audio.classList.toggle('playing');
+    audio.querySelector('.play-i').style.display = playing ? 'none' : '';
+    audio.querySelector('.pause-i').style.display = playing ? '' : 'none';
+    if (playing) setTimeout(function () {
+      audio.classList.remove('playing');
+      audio.querySelector('.play-i').style.display = '';
+      audio.querySelector('.pause-i').style.display = 'none';
+    }, 7000);
+  });
+
+  // ---- TTS por mensaje (demo: ecualizador) ----
+  document.querySelectorAll('.tts-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var actions = btn.closest('.msg-actions');
+      document.querySelectorAll('.msg-actions.speaking').forEach(function (a) {
+        if (a !== actions) a.classList.remove('speaking');
+      });
+      actions.classList.toggle('speaking');
+    });
+  });
+
+  // ---- mic: toggle grabación (demo con timer) ----
+  var mic = document.getElementById('micBtn');
+  var composer = document.getElementById('composer');
+  var recTimer = null, recSecs = 0;
+  mic.addEventListener('click', function () {
+    var rec = composer.classList.toggle('recording');
+    mic.querySelector('.mic-i').style.display = rec ? 'none' : '';
+    mic.querySelector('.stop-i').style.display = rec ? '' : 'none';
+    var t = document.getElementById('recTime');
+    if (rec) {
+      recSecs = 0; t.textContent = '0:00';
+      recTimer = setInterval(function () {
+        recSecs++;
+        t.textContent = Math.floor(recSecs / 60) + ':' + String(recSecs % 60).padStart(2, '0');
+      }, 1000);
+    } else {
+      clearInterval(recTimer);
+    }
+  });
+})();
+</script>
