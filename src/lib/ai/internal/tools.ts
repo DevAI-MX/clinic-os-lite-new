@@ -50,7 +50,7 @@ export const INTERNAL_TOOLS: readonly ToolDefinition[] = [
   {
     name: 'buscar_paciente',
     description:
-      'Busca un paciente/contacto por nombre o teléfono y devuelve sus datos y sus citas más recientes. Úsala para "qué sabemos de [nombre]", "el paciente del teléfono X".',
+      'Busca un paciente/contacto por nombre o teléfono y devuelve sus datos, sus citas más recientes y su expediente clínico ligero (síntomas, alergias, medicamentos y antecedentes que él mismo contó por WhatsApp). Úsala para "qué sabemos de [nombre]", "el paciente del teléfono X".',
     input_schema: {
       type: 'object',
       properties: {

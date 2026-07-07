@@ -16,6 +16,7 @@ import {
   APPOINTMENT_TYPES,
   LEAD_STAGES,
   PAYMENT_METHODS,
+  RECORD_CATEGORIES,
   type AgentToolContext,
   type ClinicalToolName,
   type ToolExecResult,
@@ -577,6 +578,105 @@ async function consultarConocimiento(
   })
 }
 
+// Expediente clínico ligero (migración 041). Aislamiento duro: ambas
+// herramientas operan SOLO sobre el contacto de la conversación — ni
+// siquiera aceptan un contact_id como parámetro (lección Acerotech:
+// jamás mezclar datos médicos entre pacientes).
+
+const RECORD_CATEGORY_LABEL: Record<string, string> = {
+  motivo_consulta: 'motivo de consulta',
+  sintoma: 'síntoma',
+  alergia: 'alergia',
+  medicamento: 'medicamento',
+  antecedente: 'antecedente',
+  tratamiento_previo: 'tratamiento previo',
+  nota: 'nota',
+}
+
+async function consultarExpediente(ctx: AgentToolContext): Promise<ToolExecResult> {
+  const { data, error } = await ctx.db
+    .from('patient_records')
+    .select('category, content, source, created_at')
+    .eq('account_id', ctx.accountId)
+    .eq('contact_id', ctx.contactId)
+    .eq('is_active', true)
+    .order('created_at', { ascending: false })
+    .limit(30)
+  if (error) return fail(`No pude leer el expediente: ${error.message}`)
+
+  if (!data || data.length === 0) {
+    return ok({
+      ok: true,
+      expediente: [],
+      nota: 'Este paciente aún no tiene expediente (primera vez o no ha compartido datos clínicos). Atiéndelo normal y registra con registrar_dato_clinico lo que vaya contando.',
+    })
+  }
+
+  return ok({
+    ok: true,
+    expediente: data.map((r) => ({
+      categoria: RECORD_CATEGORY_LABEL[r.category] ?? r.category,
+      dato: r.content,
+      registrado: formatSlotLabel(new Date(r.created_at), ctx.timezone),
+      origen: r.source === 'equipo' ? 'equipo' : 'conversación',
+    })),
+    instruccion_para_paciente:
+      'Usa esto como contexto para atender con continuidad ("me contabas que..."). NO le recites el expediente ni menciones que llevas un registro. Es información de ESTE paciente únicamente.',
+  })
+}
+
+async function registrarDatoClinico(
+  ctx: AgentToolContext,
+  input: { categoria: string; dato: string },
+): Promise<ToolExecResult> {
+  if (!RECORD_CATEGORIES.includes(input.categoria as never)) {
+    return fail(`categoria inválida. Usa una de: ${RECORD_CATEGORIES.join(', ')}.`)
+  }
+  const dato = typeof input.dato === 'string' ? input.dato.trim() : ''
+  if (!dato) return fail('Falta el dato a registrar.')
+  if (dato.length > 500) {
+    return fail('El dato es demasiado largo. Resúmelo en una entrada corta (máx 500 caracteres) o divídelo en varios hechos.')
+  }
+
+  // El modelo tiende a re-registrar lo mismo en cada conversación
+  // (p. ej. la misma alergia): un duplicado exacto no ensucia la BD.
+  const { data: dup } = await ctx.db
+    .from('patient_records')
+    .select('id')
+    .eq('account_id', ctx.accountId)
+    .eq('contact_id', ctx.contactId)
+    .eq('category', input.categoria)
+    .eq('content', dato)
+    .eq('is_active', true)
+    .limit(1)
+    .maybeSingle()
+  if (dup) {
+    return ok({
+      ok: true,
+      duplicado: true,
+      nota: 'Ese dato ya estaba en el expediente. Sigue la conversación con naturalidad.',
+    })
+  }
+
+  const { error } = await ctx.db.from('patient_records').insert({
+    account_id: ctx.accountId,
+    contact_id: ctx.contactId,
+    conversation_id: ctx.conversationId,
+    category: input.categoria,
+    content: dato,
+    source: 'agente',
+    is_active: true,
+    created_by: null, // NULL = registrada por el agente IA
+  })
+  if (error) return fail(`No pude registrar el dato: ${error.message}`)
+
+  return ok({
+    ok: true,
+    categoria: input.categoria,
+    nota: 'Registrado en el expediente. No se lo anuncies al paciente; sigue la conversación con naturalidad.',
+  })
+}
+
 /** ¿La cita cae dentro de alguna ventana de `clinic_hours` de su día? */
 function withinClinicHours(
   start: Date,
@@ -1009,6 +1109,10 @@ export async function executeClinicalTool(
         return await consultarMisCitas(ctx)
       case 'consultar_conocimiento':
         return await consultarConocimiento(ctx, args)
+      case 'consultar_expediente':
+        return await consultarExpediente(ctx)
+      case 'registrar_dato_clinico':
+        return await registrarDatoClinico(ctx, args)
       case 'agendar_cita':
         return await agendarCita(ctx, args)
       case 'prevalidar_anticipo':

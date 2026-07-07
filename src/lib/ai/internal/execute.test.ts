@@ -297,6 +297,47 @@ describe('buscar_paciente', () => {
     expect(out.pacientes[0].ultima_cita.estado).toBe('pendiente de confirmar')
   })
 
+  it('incluye el expediente del paciente encontrado (solo entradas activas y suyas)', async () => {
+    const db = fakeDb({
+      contacts: CONTACTS,
+      patient_records: [
+        {
+          id: 'r-1',
+          account_id: ACCOUNT,
+          contact_id: 'c-1',
+          category: 'sintoma',
+          content: 'le truena la mandíbula al masticar',
+          is_active: true,
+          created_at: '2026-07-01T18:00:00Z',
+        },
+        {
+          id: 'r-2',
+          account_id: ACCOUNT,
+          contact_id: 'c-2', // de OTRO paciente — no debe mezclarse
+          category: 'alergia',
+          content: 'alérgica a la penicilina',
+          is_active: true,
+          created_at: '2026-07-02T18:00:00Z',
+        },
+        {
+          id: 'r-3',
+          account_id: ACCOUNT,
+          contact_id: 'c-1',
+          category: 'nota',
+          content: 'entrada desactivada',
+          is_active: false,
+          created_at: '2026-07-03T18:00:00Z',
+        },
+      ],
+    })
+    const res = await executeInternalTool('buscar_paciente', { query: 'maría' }, ctxWith(db))
+    const out = JSON.parse(res.content)
+    expect(out.pacientes).toHaveLength(1)
+    expect(out.pacientes[0].expediente).toEqual([
+      { categoria: 'sintoma', dato: 'le truena la mandíbula al masticar' },
+    ])
+  })
+
   it('busca por teléfono', async () => {
     const db = fakeDb({ contacts: CONTACTS })
     const res = await executeInternalTool(

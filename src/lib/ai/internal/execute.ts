@@ -199,8 +199,24 @@ async function buscarPaciente(
     .order('starts_at', { ascending: false })
     .limit(20)
 
+  // Expediente clínico ligero (migración 041): lo que el paciente ha
+  // contado por WhatsApp, para que el doctor lo tenga a la mano sin
+  // abrir el chat.
+  const { data: records } = await ctx.db
+    .from('patient_records')
+    .select('contact_id, category, content, created_at')
+    .eq('account_id', ctx.accountId)
+    .in('contact_id', ids)
+    .eq('is_active', true)
+    .order('created_at', { ascending: false })
+    .limit(50)
+
   const pacientes = contacts.map((c) => {
     const last = (appts ?? []).find((a) => a.contact_id === c.id)
+    const expediente = (records ?? [])
+      .filter((r) => r.contact_id === c.id)
+      .slice(0, 10)
+      .map((r) => ({ categoria: r.category, dato: r.content }))
     return {
       nombre: c.name ?? 'Sin nombre',
       telefono: c.phone,
@@ -211,6 +227,7 @@ async function buscarPaciente(
             estado: APPT_STATUS_LABEL[last.status as string] ?? last.status,
           }
         : null,
+      expediente,
     }
   })
 

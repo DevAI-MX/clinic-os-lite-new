@@ -116,6 +116,17 @@ export const PAYMENT_METHODS = [
   'otro',
 ] as const
 
+/** Categorías del expediente clínico ligero (migración 041). */
+export const RECORD_CATEGORIES = [
+  'motivo_consulta',
+  'sintoma',
+  'alergia',
+  'medicamento',
+  'antecedente',
+  'tratamiento_previo',
+  'nota',
+] as const
+
 /**
  * Catálogo de herramientas en el formato Anthropic. El orden importa
  * poco, pero mantenemos consultar_* antes de las mutaciones para que el
@@ -200,6 +211,15 @@ export const CLINICAL_TOOLS = [
     },
   },
   {
+    name: 'consultar_expediente',
+    description:
+      'Devuelve el expediente clínico ligero del paciente de ESTA conversación: síntomas, alergias, medicamentos, antecedentes y tratamientos que él mismo ha contado antes. Úsala cuando el paciente ya escribió en otras ocasiones, retome su caso ("como le decía", "sigo igual") o antes de orientarlo sobre una molestia. Úsalo como contexto para atender con continuidad — nunca se lo recites textual ni menciones que llevas un registro.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
     name: 'agendar_cita',
     description:
       'APARTA una cita para el paciente. La cita queda PENDIENTE hasta que el equipo la confirme en el panel — nunca digas que quedó "confirmada" o "agendada en firme". Si el paciente ya tiene una cita pendiente, esta herramienta la REAGENDA (no crea una segunda). Si el procedimiento requiere anticipo, díselo y pídele el comprobante para prevalidarlo.',
@@ -279,6 +299,28 @@ export const CLINICAL_TOOLS = [
           description: 'Motivo que dio el paciente (para el equipo).',
         },
       },
+    },
+  },
+  {
+    name: 'registrar_dato_clinico',
+    description:
+      'Guarda en el expediente del paciente UN hecho clínico que él mismo acaba de contar (síntoma, alergia, medicamento, antecedente, tratamiento previo o el motivo de su consulta). Úsala en segundo plano en cuanto lo mencione, sin anunciárselo. Registra SOLO lo que el paciente dijo, en sus palabras — NUNCA guardes diagnósticos, interpretaciones ni conclusiones tuyas: no eres médico. Una llamada por hecho.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        categoria: {
+          type: 'string',
+          enum: [...RECORD_CATEGORIES],
+          description:
+            'motivo_consulta (qué lo trae) · sintoma · alergia · medicamento (qué toma) · antecedente (padecimientos/cirugías previas) · tratamiento_previo (qué ya intentó) · nota (otro dato clínico relevante).',
+        },
+        dato: {
+          type: 'string',
+          description:
+            'El hecho, corto y en las palabras del paciente. Ej: "le truena la mandíbula al masticar desde hace 2 meses", "alérgico a la penicilina".',
+        },
+      },
+      required: ['categoria', 'dato'],
     },
   },
   {

@@ -516,6 +516,110 @@ describe('executeClinicalTool', () => {
     expect(res.isError).toBe(true)
   })
 
+  // --- Expediente clínico ligero (migración 041) ----------------
+
+  it('consultar_expediente devuelve solo las entradas activas de ESTE contacto', async () => {
+    const db = fakeDb({
+      patient_records: [
+        {
+          id: 'r-1',
+          account_id: ACCOUNT,
+          contact_id: CONTACT,
+          category: 'sintoma',
+          content: 'le truena la mandíbula al masticar',
+          source: 'agente',
+          is_active: true,
+          created_at: '2026-07-01T18:00:00Z',
+        },
+        {
+          id: 'r-viejo',
+          account_id: ACCOUNT,
+          contact_id: CONTACT,
+          category: 'nota',
+          content: 'entrada corregida por el equipo',
+          source: 'equipo',
+          is_active: false, // desactivada — no debe salir
+          created_at: '2026-06-01T18:00:00Z',
+        },
+        {
+          id: 'r-otro',
+          account_id: ACCOUNT,
+          contact_id: 'otro-paciente', // AISLAMIENTO: jamás mezclar
+          category: 'alergia',
+          content: 'alérgico a la penicilina',
+          source: 'agente',
+          is_active: true,
+          created_at: '2026-07-02T18:00:00Z',
+        },
+      ],
+    })
+    const res = await executeClinicalTool('consultar_expediente', {}, ctxWith(db))
+    const out = JSON.parse(res.content)
+    expect(out.ok).toBe(true)
+    expect(out.expediente).toHaveLength(1)
+    expect(out.expediente[0].categoria).toBe('síntoma')
+    expect(out.expediente[0].dato).toContain('mandíbula')
+    expect(JSON.stringify(out)).not.toContain('penicilina')
+    expect(out.instruccion_para_paciente).toContain('ESTE paciente')
+  })
+
+  it('consultar_expediente sin entradas explica que es la primera vez', async () => {
+    const db = fakeDb()
+    const res = await executeClinicalTool('consultar_expediente', {}, ctxWith(db))
+    const out = JSON.parse(res.content)
+    expect(out.ok).toBe(true)
+    expect(out.expediente).toHaveLength(0)
+    expect(out.nota).toContain('registrar_dato_clinico')
+  })
+
+  it('registrar_dato_clinico guarda el hecho ligado al contacto, como agente', async () => {
+    const db = fakeDb()
+    const res = await executeClinicalTool(
+      'registrar_dato_clinico',
+      { categoria: 'alergia', dato: 'alérgica a la penicilina' },
+      ctxWith(db),
+    )
+    const out = JSON.parse(res.content)
+    expect(out.ok).toBe(true)
+    const row = db.store.patient_records[0]
+    expect(row.account_id).toBe(ACCOUNT)
+    expect(row.contact_id).toBe(CONTACT)
+    expect(row.conversation_id).toBe(CONV)
+    expect(row.category).toBe('alergia')
+    expect(row.source).toBe('agente')
+    expect(row.created_by).toBe(null) // NULL = agente IA
+    expect(out.nota).toContain('No se lo anuncies')
+  })
+
+  it('registrar_dato_clinico no duplica un hecho exacto ya registrado', async () => {
+    const db = fakeDb()
+    const ctx = ctxWith(db)
+    const input = { categoria: 'sintoma', dato: 'dolor de cabeza al despertar' }
+    await executeClinicalTool('registrar_dato_clinico', input, ctx)
+    const res = await executeClinicalTool('registrar_dato_clinico', input, ctx)
+    const out = JSON.parse(res.content)
+    expect(out.ok).toBe(true)
+    expect(out.duplicado).toBe(true)
+    expect(db.store.patient_records).toHaveLength(1)
+  })
+
+  it('registrar_dato_clinico rechaza categoría inválida o dato vacío', async () => {
+    const db = fakeDb()
+    const bad = await executeClinicalTool(
+      'registrar_dato_clinico',
+      { categoria: 'diagnostico', dato: 'bruxismo severo' },
+      ctxWith(db),
+    )
+    expect(bad.isError).toBe(true)
+    const empty = await executeClinicalTool(
+      'registrar_dato_clinico',
+      { categoria: 'sintoma', dato: '   ' },
+      ctxWith(db),
+    )
+    expect(empty.isError).toBe(true)
+    expect(db.store.patient_records ?? []).toHaveLength(0)
+  })
+
   // --- Embudo → pipeline visual (deals) ------------------------
 
   it('clasificar_lead crea el pipeline "Embudo IA" con etapas y el deal del lead', async () => {
