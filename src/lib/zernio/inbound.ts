@@ -434,16 +434,26 @@ async function processZernioInboundMessage(payload: ZernioWebhookEvent): Promise
     }).catch((err) => console.error('[zernio] automations dispatch failed:', err))
   }
 
-  // AI auto-reply for plain-text inbound — same gate as the Meta
-  // route minus the flow-consumption check. Its outbound send goes
-  // through meta-api's sendTextMessage, which routes back through
-  // Zernio when the adapter is enabled.
-  if (mapped.contentType === 'text' && inboundText.trim()) {
+  // AI auto-reply — same gate as the Meta route minus the
+  // flow-consumption check. Texto siempre; imágenes y documentos
+  // también, porque el comprobante del anticipo llega como imagen y sin
+  // esto el agente ni se enteraba (el paciente quedaba sin respuesta).
+  // El agente clínico corre un paso de visión para leer la imagen;
+  // auto-reply.ts ignora los disparos multimedia cuando la cuenta no
+  // tiene agente clínico. Its outbound send goes through meta-api's
+  // sendTextMessage, which routes back through Zernio when the adapter
+  // is enabled.
+  const triggersAiReply =
+    (mapped.contentType === 'text' && inboundText.trim().length > 0) ||
+    mapped.contentType === 'image' ||
+    mapped.contentType === 'document'
+  if (triggersAiReply) {
     await dispatchInboundToAiReply({
       accountId,
       conversationId: conversation.id,
       contactId: contact.id,
       configOwnerUserId: userId,
+      inboundContentType: mapped.contentType,
       // La respuesta debe volver a ESTA conversación de Zernio (envío por
       // inbox, no por teléfono). Ver zernioSendToConversation.
       zernioConversationId: mapped.zernioConversationId,

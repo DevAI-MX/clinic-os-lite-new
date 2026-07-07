@@ -4,14 +4,41 @@ import { aiContextMessageLimit } from './defaults'
 
 interface DbMessage {
   sender_type: 'customer' | 'agent' | 'bot'
+  content_type: string
   content_text: string | null
 }
 
+/** Etiqueta en español del marcador de un mensaje multimedia. */
+const MEDIA_LABEL: Record<string, string> = {
+  image: 'una imagen',
+  document: 'un documento',
+  audio: 'un mensaje de voz',
+  video: 'un video',
+}
+
 /**
- * Fetch the last N text messages of a conversation and map them to the
+ * Marcador textual de un mensaje multimedia para el transcript. Sin
+ * esto el modelo era ciego a que el paciente mandó algo (p. ej. el
+ * comprobante del anticipo llegaba y el agente ni se enteraba); el
+ * contenido de la imagen en sí lo aporta el paso de visión
+ * (agent/vision.ts) como nota aparte.
+ */
+function mediaPlaceholder(m: DbMessage): string {
+  const label = MEDIA_LABEL[m.content_type]
+  const caption = m.content_text?.trim()
+  const base =
+    m.sender_type === 'customer'
+      ? `[El paciente envió ${label}`
+      : `[Enviaste ${label}`
+  return caption ? `${base} con el texto: "${caption}"]` : `${base}]`
+}
+
+/**
+ * Fetch the last N messages of a conversation and map them to the
  * provider-neutral chat shape. Customer messages become `user`; agent
- * and bot messages become `assistant`. Non-text messages (media,
- * templates, interactive) are excluded — they carry no text to model.
+ * and bot messages become `assistant`. Media messages (image, document,
+ * audio, video) become a bracketed placeholder so the model knows they
+ * happened; template/interactive/location rows are still excluded.
  *
  * Ordered oldest-first (chronological) so the transcript reads
  * naturally and the most recent customer message lands last.
@@ -23,19 +50,25 @@ export async function buildConversationContext(
 ): Promise<ChatMessage[]> {
   const { data, error } = await db
     .from('messages')
-    .select('sender_type, content_text')
+    .select('sender_type, content_type, content_text')
     .eq('conversation_id', conversationId)
-    .eq('content_type', 'text')
+    .in('content_type', ['text', ...Object.keys(MEDIA_LABEL)])
     .order('created_at', { ascending: false })
     .limit(limit)
 
   if (error) throw error
 
   const rows = ((data ?? []) as DbMessage[]).reverse()
-  return rows
-    .filter((m) => m.content_text && m.content_text.trim())
-    .map((m) => ({
-      role: m.sender_type === 'customer' ? 'user' : 'assistant',
-      content: m.content_text!.trim(),
-    }))
+  const out: ChatMessage[] = []
+  for (const m of rows) {
+    const role = m.sender_type === 'customer' ? ('user' as const) : ('assistant' as const)
+    if (m.content_type === 'text') {
+      if (m.content_text && m.content_text.trim()) {
+        out.push({ role, content: m.content_text.trim() })
+      }
+    } else if (MEDIA_LABEL[m.content_type]) {
+      out.push({ role, content: mediaPlaceholder(m) })
+    }
+  }
+  return out
 }

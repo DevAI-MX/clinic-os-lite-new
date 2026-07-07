@@ -10,6 +10,7 @@ import {
   runClinicalAgent,
   buildClinicalSystemPrompt,
   buildPatientStateLines,
+  buildRecentImageNotes,
   clinicTimezone,
 } from './agent'
 import { engineSendText } from '@/lib/flows/meta-send'
@@ -29,6 +30,12 @@ interface DispatchArgs {
    *  (freeform inbox send) instead of the phone-based Meta/engine path,
    *  which Zernio's API does not support for WhatsApp. */
   zernioConversationId?: string | null
+  /** content_type del inbound que disparó el dispatch ('text', 'image',
+   *  'document'...). Un disparo multimedia solo genera respuesta cuando
+   *  la cuenta corre el agente clínico (que analiza la imagen con
+   *  visión); sin agente clínico se conserva el comportamiento previo:
+   *  las imágenes no se auto-responden. */
+  inboundContentType?: string
 }
 
 /**
@@ -61,6 +68,14 @@ export async function dispatchInboundToAiReply(
 
     const config = await loadAiConfig(db, accountId)
     if (!config || !config.autoReplyEnabled) return
+
+    // Disparo multimedia (imagen/documento): solo el agente clínico
+    // sabe qué hacer con él (paso de visión + prevalidar el anticipo).
+    // Para cuentas sin agente clínico se mantiene el comportamiento de
+    // siempre: las imágenes no generan auto-respuesta.
+    const mediaTrigger =
+      args.inboundContentType != null && args.inboundContentType !== 'text'
+    if (mediaTrigger && !config.clinicalAgentEnabled) return
 
     // Deterministic, user-configured responders win over the LLM — the
     // caller already excludes messages a Flow consumed. Message-level
@@ -156,6 +171,24 @@ export async function dispatchInboundToAiReply(
         now,
       })
 
+      // Imágenes de la ráfaga actual (p. ej. el comprobante del
+      // anticipo): el transcript solo trae marcadores de texto, así que
+      // un paso de visión extrae los datos y se inyectan como nota del
+      // sistema al final del hilo. Best-effort: sin imágenes (o si la
+      // visión falla) la corrida sigue igual.
+      const imageNotes = await buildRecentImageNotes({
+        db,
+        conversationId,
+        provider: config.provider,
+        apiKey: config.apiKey,
+        model: config.model,
+        now,
+      })
+      const agentMessages =
+        imageNotes.length > 0
+          ? [...messages, { role: 'user' as const, content: imageNotes.join('\n\n') }]
+          : messages
+
       const systemPrompt = buildClinicalSystemPrompt({
         userPrompt: config.systemPrompt,
         contactName,
@@ -169,7 +202,7 @@ export async function dispatchInboundToAiReply(
         apiKey: config.apiKey,
         model: config.model,
         systemPrompt,
-        messages,
+        messages: agentMessages,
         ctx: {
           db,
           accountId,

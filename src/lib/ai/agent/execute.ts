@@ -882,6 +882,25 @@ async function agendarCita(
   })
 }
 
+/**
+ * Última imagen/documento que el paciente envió en ESTA conversación —
+ * el comprobante real. Se adjunta al pago desde la BD en vez de confiar
+ * en que el modelo copie una URL larga sin mutilarla.
+ */
+async function findLatestReceiptUrl(ctx: AgentToolContext): Promise<string | null> {
+  const { data } = await ctx.db
+    .from('messages')
+    .select('media_url')
+    .eq('conversation_id', ctx.conversationId)
+    .eq('sender_type', 'customer')
+    .in('content_type', ['image', 'document'])
+    .not('media_url', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  return (data?.media_url as string | null) ?? null
+}
+
 async function prevalidarAnticipo(
   ctx: AgentToolContext,
   input: {
@@ -890,6 +909,7 @@ async function prevalidarAnticipo(
     metodo?: string
     concepto?: string
     comprobante_url?: string
+    referencia?: string
   },
 ): Promise<ToolExecResult> {
   let appointment = null as Awaited<ReturnType<typeof findActiveAppointment>>
@@ -928,6 +948,24 @@ async function prevalidarAnticipo(
     ? input.metodo
     : 'transferencia'
 
+  const referencia =
+    typeof input.referencia === 'string' && input.referencia.trim()
+      ? input.referencia.trim()
+      : null
+
+  // Comprobante: la URL del modelo si es válida; si no, la última
+  // imagen/documento del paciente en esta conversación.
+  const inputUrl =
+    typeof input.comprobante_url === 'string' &&
+    /^https?:\/\//i.test(input.comprobante_url.trim())
+      ? input.comprobante_url.trim()
+      : null
+  const receiptUrl = inputUrl ?? (await findLatestReceiptUrl(ctx))
+
+  const concept = [input.concepto ?? 'Anticipo', referencia ? `ref ${referencia}` : null]
+    .filter(Boolean)
+    .join(' · ')
+
   const { data: payment, error } = await ctx.db
     .from('payments')
     .insert({
@@ -939,8 +977,8 @@ async function prevalidarAnticipo(
       method: metodo,
       // Regla de oro: prevalidado, NUNCA 'confirmado'. Un humano confirma.
       status: 'pendiente',
-      concept: input.concepto ?? 'Anticipo',
-      receipt_url: input.comprobante_url ?? null,
+      concept,
+      receipt_url: receiptUrl,
     })
     .select('id')
     .single()
@@ -960,7 +998,11 @@ async function prevalidarAnticipo(
     `${ctx.contactName ?? 'Un paciente'} envió un anticipo de ${money(
       amount,
       currency,
-    )} (${metodo}). Revisa el comprobante y confírmalo en el panel.`,
+    )} (${metodo}${referencia ? `, ref ${referencia}` : ''}). ${
+      receiptUrl
+        ? 'Revisa el comprobante y confírmalo en el panel.'
+        : 'OJO: sin comprobante adjunto — pídelo o revisa la conversación antes de confirmar en el panel.'
+    }`,
   )
 
   // Hito del embudo: comprobante recibido → el deal avanza a revisión.
@@ -971,6 +1013,7 @@ async function prevalidarAnticipo(
     payment_id: payment.id,
     monto: money(amount, currency),
     estado: 'en_revision',
+    comprobante_adjunto: receiptUrl != null,
     instruccion_para_paciente:
       'Dile TEXTUALMENTE que recibiste su comprobante y quedó EN REVISIÓN del equipo, y que le avisas por aquí en cuanto quede confirmado. NUNCA digas que el pago o la cita quedaron confirmados.',
   })

@@ -252,7 +252,7 @@ export const CLINICAL_TOOLS = [
   {
     name: 'prevalidar_anticipo',
     description:
-      'Registra el anticipo del paciente como PENDIENTE de revisión del equipo. NO confirma el pago ni la cita. Tras usarla, dile al paciente exactamente que recibiste su comprobante y quedó EN REVISIÓN del equipo, y que le avisas por aquí en cuanto quede confirmado. Nunca digas "tu pago/cita quedó confirmado". Pide el comprobante (imagen) antes de usarla; una promesa verbal no basta.',
+      'Registra el anticipo del paciente como PENDIENTE de revisión del equipo y le adjunta automáticamente la última imagen que envió (su comprobante) para que el equipo lo valide manualmente en el panel. NO confirma el pago ni la cita. Úsala EN EL MISMO turno en que el paciente mande la foto de su comprobante (la nota automática del sistema te da los datos extraídos). Tras usarla, dile al paciente exactamente que recibiste su comprobante y quedó EN REVISIÓN del equipo, y que le avisas por aquí en cuanto quede confirmado. Nunca digas "tu pago/cita quedó confirmado". Pide el comprobante (imagen) antes de usarla; una promesa verbal no basta.',
     input_schema: {
       type: 'object',
       properties: {
@@ -264,7 +264,7 @@ export const CLINICAL_TOOLS = [
         monto: {
           type: 'number',
           description:
-            'Monto del anticipo. Omítelo para usar el anticipo requerido por el procedimiento/cita.',
+            'Monto del anticipo. Usa el monto detectado en el comprobante si lo hay; omítelo para usar el anticipo requerido por el procedimiento/cita.',
         },
         metodo: {
           type: 'string',
@@ -273,11 +273,18 @@ export const CLINICAL_TOOLS = [
         },
         concepto: {
           type: 'string',
-          description: 'Concepto, p. ej. "Anticipo valoración".',
+          description:
+            'Concepto, p. ej. "Anticipo valoración". Si el monto del comprobante NO coincide con el anticipo requerido, anota aquí la diferencia para el equipo.',
         },
         comprobante_url: {
           type: 'string',
-          description: 'URL del comprobante que envió el paciente, si la hay.',
+          description:
+            'Normalmente OMÍTELA: la herramienta adjunta sola la última imagen que envió el paciente. Pásala solo si tienes una URL exacta de otro comprobante.',
+        },
+        referencia: {
+          type: 'string',
+          description:
+            'Folio, clave de rastreo o referencia del comprobante, si se detectó en la imagen.',
         },
       },
     },

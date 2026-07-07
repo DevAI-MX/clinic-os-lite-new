@@ -459,6 +459,90 @@ describe('executeClinicalTool', () => {
     expect(out.instruccion_para_paciente.toLowerCase()).toContain('revisión')
   })
 
+  it('prevalidar_anticipo adjunta el comprobante desde la BD cuando el modelo no pasa URL', async () => {
+    const db = fakeDb({
+      procedures: [PROC],
+      appointments: [
+        {
+          id: 'a-1',
+          account_id: ACCOUNT,
+          contact_id: CONTACT,
+          status: 'pendiente',
+          deposit_status: 'pendiente',
+          deposit_amount: '300',
+          procedure_id: 'proc-1',
+          starts_at: '2026-07-09T17:00:00Z',
+          ends_at: '2026-07-09T17:30:00Z',
+        },
+      ],
+      messages: [
+        {
+          id: 'm-1',
+          conversation_id: CONV,
+          sender_type: 'customer',
+          content_type: 'image',
+          media_url: 'https://cdn.zernio.test/comprobante-viejo.jpg',
+          created_at: '2026-07-08T15:00:00Z',
+        },
+        {
+          id: 'm-2',
+          conversation_id: CONV,
+          sender_type: 'customer',
+          content_type: 'image',
+          media_url: 'https://cdn.zernio.test/comprobante.jpg',
+          created_at: '2026-07-08T15:59:00Z',
+        },
+        // De OTRA conversación: jamás debe adjuntarse aquí.
+        {
+          id: 'm-3',
+          conversation_id: 'conv-ajena',
+          sender_type: 'customer',
+          content_type: 'image',
+          media_url: 'https://cdn.zernio.test/ajeno.jpg',
+          created_at: '2026-07-08T16:30:00Z',
+        },
+      ],
+    })
+    const res = await executeClinicalTool(
+      'prevalidar_anticipo',
+      { referencia: 'MBAN123456' },
+      ctxWith(db),
+    )
+    const out = JSON.parse(res.content)
+    expect(out.ok).toBe(true)
+    expect(out.comprobante_adjunto).toBe(true)
+    const pay = db.store.payments[0]
+    // La imagen más reciente del paciente en ESTA conversación.
+    expect(pay.receipt_url).toBe('https://cdn.zernio.test/comprobante.jpg')
+    expect(pay.concept).toContain('ref MBAN123456')
+    expect(db.store.notifications[0].body).toContain('ref MBAN123456')
+  })
+
+  it('prevalidar_anticipo sin comprobante avisa al equipo que falta el adjunto', async () => {
+    const db = fakeDb({
+      procedures: [PROC],
+      appointments: [
+        {
+          id: 'a-1',
+          account_id: ACCOUNT,
+          contact_id: CONTACT,
+          status: 'pendiente',
+          deposit_status: 'pendiente',
+          deposit_amount: '300',
+          procedure_id: 'proc-1',
+          starts_at: '2026-07-09T17:00:00Z',
+          ends_at: '2026-07-09T17:30:00Z',
+        },
+      ],
+    })
+    const res = await executeClinicalTool('prevalidar_anticipo', {}, ctxWith(db))
+    const out = JSON.parse(res.content)
+    expect(out.ok).toBe(true)
+    expect(out.comprobante_adjunto).toBe(false)
+    expect(db.store.payments[0].receipt_url).toBeNull()
+    expect(db.store.notifications[0].body).toContain('sin comprobante')
+  })
+
   it('clasificar_lead guarda etapa (tag) y actualiza el nombre', async () => {
     const db = fakeDb({ contacts: [{ id: CONTACT, account_id: ACCOUNT, name: '+525512345678' }] })
     const res = await executeClinicalTool(

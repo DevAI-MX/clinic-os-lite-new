@@ -9,6 +9,8 @@ const h = vi.hoisted(() => ({
   generateReply: vi.fn(),
   engineSendText: vi.fn(),
   zernioSendToConversation: vi.fn(),
+  runClinicalAgent: vi.fn(),
+  buildRecentImageNotes: vi.fn(),
   state: {
     conv: null as Record<string, unknown> | null,
     autoResponders: [] as { id: string }[],
@@ -36,6 +38,16 @@ vi.mock('./generate', () => ({ generateReply: h.generateReply }))
 vi.mock('@/lib/flows/meta-send', () => ({ engineSendText: h.engineSendText }))
 vi.mock('@/lib/zernio/client', () => ({
   zernioSendToConversation: h.zernioSendToConversation,
+}))
+// Rama clínica: el loop de tool-use y el paso de visión tienen sus
+// propios tests (loop*.test.ts, vision.test.ts); aquí solo importa el
+// wiring de dispatchInboundToAiReply.
+vi.mock('./agent', () => ({
+  runClinicalAgent: h.runClinicalAgent,
+  buildClinicalSystemPrompt: () => 'sys-prompt',
+  buildPatientStateLines: async () => [],
+  buildRecentImageNotes: h.buildRecentImageNotes,
+  clinicTimezone: () => 'America/Mexico_City',
 }))
 vi.mock('./admin-client', () => ({
   supabaseAdmin: () => ({
@@ -212,6 +224,8 @@ beforeEach(() => {
   h.retrieveKnowledge.mockResolvedValue([])
   h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false })
   h.engineSendText.mockResolvedValue({ whatsapp_message_id: 'm1' })
+  h.runClinicalAgent.mockResolvedValue({ text: 'Hola!', handoff: false, escalated: false })
+  h.buildRecentImageNotes.mockResolvedValue([])
 })
 
 describe('dispatchInboundToAiReply — eligibility gates', () => {
@@ -466,5 +480,47 @@ describe('dispatchInboundToAiReply — zernio echo dedupe', () => {
     } finally {
       errSpy.mockRestore()
     }
+  })
+})
+
+// El comprobante del anticipo llega como IMAGEN. El disparo multimedia
+// solo tiene sentido con el agente clínico (paso de visión); sin él se
+// conserva el comportamiento previo (las imágenes no se auto-responden).
+describe('dispatchInboundToAiReply — multimedia (comprobantes)', () => {
+  it('ignora un disparo multimedia cuando la cuenta no corre el agente clínico', async () => {
+    await dispatchInboundToAiReply({ ...ARGS, inboundContentType: 'image' })
+    expect(h.generateReply).not.toHaveBeenCalled()
+    expect(h.runClinicalAgent).not.toHaveBeenCalled()
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('clinical: inyecta las notas de visión como último turno del transcript', async () => {
+    h.loadAiConfig.mockResolvedValue(aiConfig({ clinicalAgentEnabled: true }))
+    h.buildConversationContext.mockResolvedValue([
+      { role: 'user', content: '[El paciente envió una imagen]' },
+    ])
+    h.buildRecentImageNotes.mockResolvedValue([
+      '[Nota automática del sistema] Es comprobante de pago: sí\nMonto: 350 MXN',
+    ])
+    await dispatchInboundToAiReply({ ...ARGS, inboundContentType: 'image' })
+    expect(h.runClinicalAgent).toHaveBeenCalledTimes(1)
+    const call = h.runClinicalAgent.mock.calls[0][0]
+    expect(call.messages).toEqual([
+      { role: 'user', content: '[El paciente envió una imagen]' },
+      {
+        role: 'user',
+        content: '[Nota automática del sistema] Es comprobante de pago: sí\nMonto: 350 MXN',
+      },
+    ])
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+  })
+
+  it('clinical: sin imágenes recientes el transcript va intacto', async () => {
+    h.loadAiConfig.mockResolvedValue(aiConfig({ clinicalAgentEnabled: true }))
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.runClinicalAgent).toHaveBeenCalledTimes(1)
+    expect(h.runClinicalAgent.mock.calls[0][0].messages).toEqual([
+      { role: 'user', content: 'hi' },
+    ])
   })
 })

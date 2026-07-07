@@ -10,6 +10,8 @@ export type {
 export { buildClinicalSystemPrompt } from './prompt'
 export type { ClinicalPromptArgs } from './prompt'
 export { buildPatientStateLines } from './state'
+export { analyzeReceiptImage, buildReceiptNote, buildRecentImageNotes } from './vision'
+export type { ReceiptAnalysis } from './vision'
 export { CLINICAL_TOOLS } from './tools'
 export type { AgentToolContext, ToolDefinition, ToolExecutor, ToolExecResult } from './tools'
 export { FUNNEL_PIPELINE_NAME } from './execute'

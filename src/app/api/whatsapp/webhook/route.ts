@@ -785,17 +785,25 @@ async function processMessage(
     }).catch((err) => console.error('[automations] dispatch failed:', err))
   }
 
-  // AI auto-reply. Runs only for plain-text inbound the deterministic
-  // flow runner did NOT consume (flows win over the LLM), and only when
-  // the account has enabled it. Awaited inside `after()` (same reason as
-  // the webhook dispatch below); `dispatchInboundToAiReply` owns its
-  // eligibility gates + try/catch and never throws.
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+  // AI auto-reply. Runs for plain-text inbound the deterministic flow
+  // runner did NOT consume (flows win over the LLM) — and also for
+  // images/documents (el comprobante del anticipo llega como imagen; el
+  // agente clínico corre un paso de visión y auto-reply.ts ignora los
+  // disparos multimedia si la cuenta no tiene agente clínico). Awaited
+  // inside `after()` (same reason as the webhook dispatch below);
+  // `dispatchInboundToAiReply` owns its eligibility gates + try/catch
+  // and never throws.
+  const triggersAiReply =
+    (!interactiveReplyId && inboundText.trim().length > 0) ||
+    contentType === 'image' ||
+    contentType === 'document'
+  if (!flowConsumed && triggersAiReply) {
     await dispatchInboundToAiReply({
       accountId,
       conversationId: conversation.id,
       contactId: contactRecord.id,
       configOwnerUserId,
+      inboundContentType: contentType,
     })
   }
 
