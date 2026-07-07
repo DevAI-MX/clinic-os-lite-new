@@ -48,7 +48,16 @@ function fakeDb(opts: { uploadError?: string } = {}) {
   return { db, uploads }
 }
 
-const baseArgs = { accountId: 'acc-1', url: 'https://cdn.zernio.example/x', now: 123 }
+// sleep sin espera real — los tests de reintento verifican el conteo
+// de llamadas a fetch, no el paso del tiempo.
+const noopSleep = async () => {}
+
+const baseArgs = {
+  accountId: 'acc-1',
+  url: 'https://cdn.zernio.example/x',
+  now: 123,
+  sleep: noopSleep,
+}
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -100,12 +109,40 @@ describe('rehostInboundMedia', () => {
     expect(uploads).toHaveLength(0)
   })
 
-  it('devuelve null cuando la descarga responde error', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => fakeResponse({ ok: false })))
+  it('devuelve null cuando la descarga responde error en todos los intentos', async () => {
+    const fetchMock = vi.fn(async () => fakeResponse({ ok: false }))
+    vi.stubGlobal('fetch', fetchMock)
     const { db, uploads } = fakeDb()
 
     expect(await rehostInboundMedia({ db, ...baseArgs })).toBeNull()
     expect(uploads).toHaveLength(0)
+    // 1 intento inicial + 2 reintentos (RETRY_DELAYS_MS).
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('reintenta cuando Zernio aún no cachea el archivo y sube en el intento que sí responde', async () => {
+    let call = 0
+    const fetchMock = vi.fn(async () => {
+      call += 1
+      // Los primeros 2 intentos fallan (CDN todavía no listo); el 3º sí.
+      return call < 3 ? fakeResponse({ ok: false }) : fakeResponse({ bytes: JPEG_BYTES })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const sleepCalls: number[] = []
+    const { db, uploads } = fakeDb()
+
+    const url = await rehostInboundMedia({
+      db,
+      ...baseArgs,
+      sleep: async (ms: number) => {
+        sleepCalls.push(ms)
+      },
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(sleepCalls).toEqual([1_000, 2_000])
+    expect(uploads).toHaveLength(1)
+    expect(url).not.toBeNull()
   })
 
   it('devuelve null cuando el content-length declarado excede el tope', async () => {

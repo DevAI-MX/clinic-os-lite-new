@@ -23,6 +23,14 @@ const BUCKET = 'chat-media'
 /** Igual al file_size_limit del bucket (migración 023). */
 const MAX_BYTES = 16 * 1024 * 1024
 const TIMEOUT_MS = 15_000
+/**
+ * Zernio a veces expone la URL del adjunto en el webhook ANTES de
+ * terminar de cachear el archivo desde Meta — una descarga inmediata
+ * puede fallar (404/50x) aunque la URL sea válida segundos después (la
+ * visión, que corre tras el debounce de ~9s, sí la lee bien). Reintenta
+ * antes de rendirse.
+ */
+const RETRY_DELAYS_MS = [1_000, 2_000]
 
 /**
  * mime → extensión del objeto. Solo tipos del allow-list del bucket
@@ -81,6 +89,36 @@ export interface RehostInboundMediaArgs {
   url: string
   /** Inyectable para tests; default Date.now(). */
   now?: number
+  /** Inyectable para tests; default setTimeout real. */
+  sleep?: (ms: number) => Promise<void>
+}
+
+function realSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Descarga con reintentos — ver RETRY_DELAYS_MS. */
+async function downloadWithRetry(
+  url: string,
+  sleep: (ms: number) => Promise<void>,
+): Promise<Response | null> {
+  const attempts = RETRY_DELAYS_MS.length + 1
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) })
+      if (res.ok) return res
+      console.warn(
+        `[rehost-media] download attempt ${attempt + 1}/${attempts} failed with status ${res.status}`,
+      )
+    } catch (err) {
+      console.warn(
+        `[rehost-media] download attempt ${attempt + 1}/${attempts} threw:`,
+        err instanceof Error ? err.message : err,
+      )
+    }
+    if (attempt < RETRY_DELAYS_MS.length) await sleep(RETRY_DELAYS_MS[attempt])
+  }
+  return null
 }
 
 /**
@@ -94,8 +132,8 @@ export async function rehostInboundMedia(
   args: RehostInboundMediaArgs,
 ): Promise<string | null> {
   try {
-    const res = await fetch(args.url, { signal: AbortSignal.timeout(TIMEOUT_MS) })
-    if (!res.ok) return null
+    const res = await downloadWithRetry(args.url, args.sleep ?? realSleep)
+    if (!res) return null
 
     const declaredLength = Number(res.headers.get('content-length'))
     if (Number.isFinite(declaredLength) && declaredLength > MAX_BYTES) return null
