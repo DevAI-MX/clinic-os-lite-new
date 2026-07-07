@@ -16,11 +16,15 @@ const h = vi.hoisted(() => ({
     updatePayload: null as Record<string, unknown> | null,
     rpcCalls: [] as { name: string; args: unknown }[],
     dispatchDueAt: null as string | null,
+    // Avisos al equipo (retireConversationToHumans).
+    notifications: [] as Record<string, unknown>[],
     // messages table (Zernio branch): rows the echo-relabel UPDATE
-    // matches, inserts attempted, and a forced insert error.
+    // matches, inserts attempted, deletes (barrido anti-duplicados) and
+    // a forced insert error.
     messagesEchoRows: [] as { id: string }[],
     messagesUpdates: [] as Record<string, unknown>[],
     messagesInserts: [] as Record<string, unknown>[],
+    messagesDeletes: 0,
     messagesInsertError: null as { code?: string; message?: string } | null,
   },
 }))
@@ -52,6 +56,37 @@ vi.mock('./admin-client', () => ({
             h.state.messagesInserts.push(payload)
             return Promise.resolve({ error: h.state.messagesInsertError })
           },
+          delete: () => {
+            h.state.messagesDeletes += 1
+            const chain = {
+              eq: () => chain,
+              gte: () => chain,
+              then: (resolve: (v: { error: null }) => void) =>
+                resolve({ error: null }),
+            }
+            return chain
+          },
+        }
+      }
+      if (table === 'notifications') {
+        return {
+          insert: (row: Record<string, unknown>) => {
+            h.state.notifications.push(row)
+            return Promise.resolve({ error: null })
+          },
+        }
+      }
+      if (table === 'contacts') {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: () =>
+                Promise.resolve({
+                  data: { name: 'Acerotech', phone: '5214444220456' },
+                  error: null,
+                }),
+            }),
+          }),
         }
       }
       if (table === 'automations') {
@@ -96,7 +131,27 @@ vi.mock('./admin-client', () => ({
             }
           }
           h.state.updatePayload = payload
-          return { eq: () => Promise.resolve({ error: null }) }
+          // Soporta ambos consumidores: `await update().eq()` (updates
+          // simples) y `update().eq().eq().select()` (el flip condicionado
+          // de retireConversationToHumans, que solo "flippea" si el flag
+          // estaba apagado).
+          const isRetireFlip = payload.ai_autoreply_disabled === true
+          const chain = {
+            eq: () => chain,
+            select: () => {
+              const wasOff = h.state.conv?.ai_autoreply_disabled === false
+              if (isRetireFlip && h.state.conv) {
+                h.state.conv.ai_autoreply_disabled = true
+              }
+              return Promise.resolve({
+                data: wasOff ? [{ id: 'conv-1' }] : [],
+                error: null,
+              })
+            },
+            then: (resolve: (v: { error: null }) => void) =>
+              resolve({ error: null }),
+          }
+          return chain
         },
       }
     },
@@ -147,6 +202,8 @@ beforeEach(() => {
   h.state.updatePayload = null
   h.state.rpcCalls = []
   h.state.dispatchDueAt = null
+  h.state.notifications = []
+  h.state.messagesDeletes = 0
   // Debounce is off by default in these tests — see the dedicated
   // "debounce" describe block below for the window itself.
   process.env.AI_DEBOUNCE_WINDOW_MS = '0'
@@ -186,12 +243,16 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     expect(h.engineSendText).not.toHaveBeenCalled()
   })
 
-  it('does not send when the atomic slot claim loses the race', async () => {
+  it('does not send when the atomic slot claim loses the race — and retires the thread to humans', async () => {
     h.state.claim = false
     await dispatchInboundToAiReply(ARGS)
     // It still attempts the claim, but the send is skipped.
     expect(h.state.rpcCalls).toHaveLength(1)
     expect(h.engineSendText).not.toHaveBeenCalled()
+    // El claim perdido significa tope alcanzado: el hilo pasa al equipo.
+    expect(h.state.conv?.ai_autoreply_disabled).toBe(true)
+    expect(h.state.notifications).toHaveLength(1)
+    expect(h.state.notifications[0].type).toBe('ai_escalation')
   })
 
   it('skips when AI is off / not configured', async () => {
@@ -227,7 +288,7 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     expect(h.engineSendText).not.toHaveBeenCalled()
   })
 
-  it('skips when the per-conversation cap is reached', async () => {
+  it('cap alcanzado: no responde, apaga el auto-reply y avisa al equipo (nunca fantasma)', async () => {
     h.state.conv = {
       assigned_agent_id: null,
       ai_autoreply_disabled: false,
@@ -235,6 +296,45 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     }
     await dispatchInboundToAiReply(ARGS)
     expect(h.engineSendText).not.toHaveBeenCalled()
+    expect(h.generateReply).not.toHaveBeenCalled()
+    // Incidente Acerotech: antes esto era un return silencioso y el
+    // lead quedaba hablando solo justo al aceptar la cita.
+    expect(h.state.conv?.ai_autoreply_disabled).toBe(true)
+    expect(h.state.notifications).toHaveLength(1)
+    expect(h.state.notifications[0].title).toContain('tope')
+    expect(String(h.state.notifications[0].body)).toContain('Acerotech')
+  })
+
+  it('con el auto-reply ya apagado tras el tope, no vuelve a notificar', async () => {
+    h.state.conv = {
+      assigned_agent_id: null,
+      ai_autoreply_disabled: false,
+      ai_reply_count: 3,
+    }
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.state.notifications).toHaveLength(1)
+    // Siguiente inbound: el gate de ai_autoreply_disabled corta antes.
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.state.notifications).toHaveLength(1)
+  })
+
+  it('tope 0 = sin tope: responde aunque el contador vaya alto (decisión de producto)', async () => {
+    h.loadAiConfig.mockResolvedValue(aiConfig({ autoReplyMaxPerConversation: 0 }))
+    h.state.conv = {
+      assigned_agent_id: null,
+      ai_autoreply_disabled: false,
+      ai_reply_count: 500,
+    }
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+    expect(h.state.notifications).toHaveLength(0)
+    // El claim corre igual (métricas), contra un máximo inalcanzable.
+    expect(h.state.rpcCalls).toEqual([
+      {
+        name: 'claim_ai_reply_slot',
+        args: { conversation_id: 'conv-1', max_replies: 2147483647 },
+      },
+    ])
   })
 
   it('skips when there is nothing to reply to', async () => {
@@ -304,12 +404,16 @@ describe('dispatchInboundToAiReply — debounce', () => {
 })
 
 describe('dispatchInboundToAiReply — handoff', () => {
-  it('disables auto-reply and does not send on handoff', async () => {
+  it('disables auto-reply, notifies the team, and does not send on handoff', async () => {
     h.generateReply.mockResolvedValue({ text: '', handoff: true })
     await dispatchInboundToAiReply(ARGS)
     expect(h.engineSendText).not.toHaveBeenCalled()
     expect(h.state.updatePayload).toEqual({ ai_autoreply_disabled: true })
     expect(h.state.rpcCalls).toHaveLength(0)
+    // El handoff silencioso dejaba al paciente esperando sin que el
+    // equipo se enterara: ahora siempre hay aviso.
+    expect(h.state.notifications).toHaveLength(1)
+    expect(h.state.notifications[0].type).toBe('ai_escalation')
   })
 })
 
@@ -327,7 +431,7 @@ describe('dispatchInboundToAiReply — zernio echo dedupe', () => {
     h.state.messagesInsertError = null
   })
 
-  it('inserts the bot row when no echo landed first', async () => {
+  it('inserts the bot row when no echo landed first, then sweeps stray echo twins', async () => {
     await dispatchInboundToAiReply(ZARGS)
     expect(h.zernioSendToConversation).toHaveBeenCalledWith({
       conversationId: 'zconv-1',
@@ -339,6 +443,9 @@ describe('dispatchInboundToAiReply — zernio echo dedupe', () => {
       content_text: 'Hello!',
       message_id: 'wamid.1',
     })
+    // Barrido post-insert: si el eco aterrizó entre el relabel y el
+    // insert, su fila 'agent' gemela se borra (duplicados del panel).
+    expect(h.state.messagesDeletes).toBe(1)
   })
 
   it("relabels the echo's 'agent' row to 'bot' instead of inserting a duplicate", async () => {
@@ -346,6 +453,7 @@ describe('dispatchInboundToAiReply — zernio echo dedupe', () => {
     await dispatchInboundToAiReply(ZARGS)
     expect(h.state.messagesUpdates).toContainEqual({ sender_type: 'bot' })
     expect(h.state.messagesInserts).toHaveLength(0)
+    expect(h.state.messagesDeletes).toBe(0) // el relabel ya resolvió
   })
 
   it('treats a unique violation on insert as "already persisted", not an error', async () => {

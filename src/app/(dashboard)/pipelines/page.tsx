@@ -6,6 +6,7 @@ import type { Pipeline, PipelineStage, Deal } from "@/types";
 import { PipelineBoard } from "@/components/pipelines/pipeline-board";
 import { PipelineSettings } from "@/components/pipelines/pipeline-settings";
 import { DealForm } from "@/components/pipelines/deal-form";
+import { LeadDetail } from "@/components/pipelines/lead-detail";
 import { PipelineAnalytics } from "@/components/pipelines/pipeline-analytics";
 import { Button } from "@/components/ui/button";
 import {
@@ -67,6 +68,11 @@ export default function PipelinesPage() {
   const [dealFormOpen, setDealFormOpen] = useState(false);
   const [editingDeal, setEditingDeal] = useState<Deal | null>(null);
   const [defaultStageId, setDefaultStageId] = useState<string>("");
+
+  // Detalle 360° del lead: se abre al hacer click en una tarjeta; el
+  // formulario de edición queda detrás de su botón "Editar deal".
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailDeal, setDetailDeal] = useState<Deal | null>(null);
 
   // Guard against double-seeding (React StrictMode double-effect in dev).
   const seedAttempted = useRef(false);
@@ -239,7 +245,14 @@ export default function PipelinesPage() {
     [stages],
   );
 
+  // Click en una tarjeta → detalle 360° (expediente, citas, pagos).
+  const handleOpenDeal = useCallback((deal: Deal) => {
+    setDetailDeal(deal);
+    setDetailOpen(true);
+  }, []);
+
   const handleEditDeal = useCallback((deal: Deal) => {
+    setDetailOpen(false);
     setEditingDeal(deal);
     setDefaultStageId(deal.stage_id);
     setDealFormOpen(true);
@@ -416,7 +429,7 @@ export default function PipelinesPage() {
             deals={deals}
             onDealMoved={handleDealMoved}
             onAddDeal={handleAddDeal}
-            onEditDeal={handleEditDeal}
+            onEditDeal={handleOpenDeal}
           />
         </>
       )}
@@ -476,6 +489,15 @@ export default function PipelinesPage() {
           }}
         />
       )}
+
+      {/* Detalle 360° del lead (Sheet) */}
+      <LeadDetail
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        deal={detailDeal}
+        stage={stages.find((s) => s.id === detailDeal?.stage_id) ?? null}
+        onEdit={handleEditDeal}
+      />
 
       {/* Deal Form (Sheet) */}
       <DealForm

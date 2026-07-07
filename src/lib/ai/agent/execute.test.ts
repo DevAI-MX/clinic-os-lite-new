@@ -56,6 +56,23 @@ class Builder {
     this.filters.push((r) => String(r[col] ?? '').includes(needle))
     return this
   }
+  // Subconjunto que usa findValoracionProcedure: OR de ilikes.
+  or(expr: string) {
+    const branches = expr.split(',').map((b) => {
+      const [col, op, ...rest] = b.split('.')
+      const pat = rest.join('.')
+      if (op !== 'ilike') throw new Error(`fake or(): op no soportado ${op}`)
+      const needle = pat.replace(/%/g, '').toLowerCase()
+      return (r: Row) => String(r[col] ?? '').toLowerCase().includes(needle)
+    })
+    this.filters.push((r) => branches.some((f) => f(r)))
+    return this
+  }
+  not(col: string, op: string, val: unknown) {
+    if (op !== 'is' || val !== null) throw new Error('fake not(): solo "is null"')
+    this.filters.push((r) => r[col] != null)
+    return this
+  }
   order(col: string, opts?: { ascending?: boolean }) {
     this._order = { col, asc: opts?.ascending !== false }
     return this
@@ -310,6 +327,104 @@ describe('executeClinicalTool', () => {
     expect(db.store.appointments ?? []).toHaveLength(0)
   })
 
+  // --- Regla de oro del anticipo (fallback a la valoración) ------
+
+  it('agendar_cita sin procedure_id hereda el anticipo del procedimiento de valoración', async () => {
+    const db = fakeDb({ clinic_hours: HOURS, procedures: [PROC] })
+    const res = await executeClinicalTool(
+      'agendar_cita',
+      { inicio: '2026-07-08T12:00' }, // el modelo olvidó procedure_id
+      ctxWith(db),
+    )
+    const out = JSON.parse(res.content)
+    expect(out.ok).toBe(true)
+    const appt = db.store.appointments[0]
+    expect(appt.deposit_status).toBe('pendiente') // nunca sin anticipo
+    expect(Number(appt.deposit_amount)).toBe(300)
+    expect(out.anticipo_requerido).toContain('300')
+    expect(out.anticipo_de).toBe('Valoración presencial')
+  })
+
+  it('agendar_cita para un procedimiento SIN anticipo propio (ej. carillas) también pide el de la valoración', async () => {
+    const carillas = {
+      ...PROC,
+      id: 'proc-carillas',
+      name: 'Carillas (Emax / Zirconia)',
+      category: 'dental',
+      price_min: null,
+      price_max: null,
+      deposit_amount: null,
+      duration_minutes: 60,
+    }
+    const db = fakeDb({ clinic_hours: HOURS, procedures: [PROC, carillas] })
+    const res = await executeClinicalTool(
+      'agendar_cita',
+      { inicio: '2026-07-08T12:00', procedure_id: 'proc-carillas' },
+      ctxWith(db),
+    )
+    const out = JSON.parse(res.content)
+    expect(out.ok).toBe(true)
+    const appt = db.store.appointments[0]
+    expect(appt.procedure_id).toBe('proc-carillas') // el interés se conserva
+    expect(appt.deposit_status).toBe('pendiente')
+    expect(Number(appt.deposit_amount)).toBe(300) // anticipo de la valoración
+  })
+
+  it('agendar_cita de seguimiento no exige anticipo', async () => {
+    const db = fakeDb({ clinic_hours: HOURS, procedures: [PROC] })
+    const res = await executeClinicalTool(
+      'agendar_cita',
+      { inicio: '2026-07-08T12:00', tipo: 'seguimiento' },
+      ctxWith(db),
+    )
+    const out = JSON.parse(res.content)
+    expect(out.ok).toBe(true)
+    expect(db.store.appointments[0].deposit_status).toBe('no_aplica')
+    expect(out.anticipo_requerido).toBe(null)
+  })
+
+  it('agendar_cita con anticipo incluye los datos de pago en el mismo resultado', async () => {
+    const db = fakeDb({
+      clinic_hours: HOURS,
+      procedures: [PROC],
+      payment_accounts: [
+        {
+          id: 'pa-1',
+          account_id: ACCOUNT,
+          bank: 'BBVA',
+          holder: 'Dr. Ángel Zavala Díaz',
+          clabe: '012345678901234567',
+          account_number: null,
+          instructions: null,
+          is_active: true,
+        },
+      ],
+    })
+    const res = await executeClinicalTool(
+      'agendar_cita',
+      { inicio: '2026-07-08T12:00', procedure_id: 'proc-1' },
+      ctxWith(db),
+    )
+    const out = JSON.parse(res.content)
+    expect(out.ok).toBe(true)
+    expect(out.datos_pago).toHaveLength(1)
+    expect(out.datos_pago[0].banco).toBe('BBVA')
+    expect(out.instruccion_para_paciente).toContain('MISMO mensaje')
+  })
+
+  it('agendar_cita con anticipo pero sin cuentas configuradas manda a avisar al equipo', async () => {
+    const db = fakeDb({ clinic_hours: HOURS, procedures: [PROC] })
+    const res = await executeClinicalTool(
+      'agendar_cita',
+      { inicio: '2026-07-08T12:00', procedure_id: 'proc-1' },
+      ctxWith(db),
+    )
+    const out = JSON.parse(res.content)
+    expect(out.ok).toBe(true)
+    expect(out.datos_pago).toHaveLength(0)
+    expect(out.instruccion_para_paciente).toContain('NO inventes')
+  })
+
   it('prevalidar_anticipo registra el pago en pendiente y no confirma nada', async () => {
     const db = fakeDb({
       procedures: [PROC],
@@ -353,9 +468,27 @@ describe('executeClinicalTool', () => {
     )
     const out = JSON.parse(res.content)
     expect(out.ok).toBe(true)
+    expect(out.etiqueta_crm).toBe('actualizada')
     expect(db.store.contacts[0].name).toBe('María López')
-    expect(db.store.tags.some((t) => t.name === 'lead:interesado')).toBe(true)
+    const tag = db.store.tags.find((t) => t.name === 'lead:interesado')
+    expect(tag).toBeTruthy()
+    // tags.account_id es NOT NULL (migración 017): sin él, el insert
+    // fallaba en silencio y el CRM nunca mostraba la calificación.
+    expect(tag?.account_id).toBe(ACCOUNT)
+    expect(tag?.user_id).toBe(USER)
     expect(db.store.contact_tags).toHaveLength(1)
+  })
+
+  it('clasificar_lead reemplaza la etiqueta de embudo anterior (una sola vigente)', async () => {
+    const db = fakeDb({ contacts: [{ id: CONTACT, account_id: ACCOUNT, name: 'María' }] })
+    const ctx = ctxWith(db)
+    await executeClinicalTool('clasificar_lead', { etapa: 'pregunton' }, ctx)
+    await executeClinicalTool('clasificar_lead', { etapa: 'interesado' }, ctx)
+    const activeTagIds = db.store.contact_tags.map((ct) => ct.tag_id)
+    const activeNames = db.store.tags
+      .filter((t) => activeTagIds.includes(t.id))
+      .map((t) => t.name)
+    expect(activeNames).toEqual(['lead:interesado'])
   })
 
   it('escalar_a_humano apaga el auto-reply y marca escalated', async () => {

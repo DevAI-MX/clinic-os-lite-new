@@ -1,10 +1,71 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi, beforeEach } from 'vitest'
+
+// Fake mínimo del admin-client para probar processZernioOutboundEcho
+// (el eco de message.sent) contra un store en memoria. Los tests de
+// mapeo puro de abajo no lo tocan.
+const h = vi.hoisted(() => ({
+  store: {} as Record<string, Record<string, unknown>[]>,
+  inserts: [] as { table: string; row: Record<string, unknown> }[],
+}))
+
+vi.mock('@/lib/flows/admin-client', () => ({
+  supabaseAdmin: () => ({
+    from(table: string) {
+      const filters: ((r: Record<string, unknown>) => boolean)[] = []
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const chain: any = {
+        select: () => chain,
+        eq: (c: string, v: unknown) => {
+          filters.push((r) => r[c] === v)
+          return chain
+        },
+        in: (c: string, vs: unknown[]) => {
+          filters.push((r) => vs.includes(r[c]))
+          return chain
+        },
+        gte: (c: string, v: string) => {
+          filters.push((r) => String(r[c]) >= v)
+          return chain
+        },
+        limit: () => chain,
+        maybeSingle: () =>
+          Promise.resolve({
+            data:
+              (h.store[table] ?? []).find((r) => filters.every((f) => f(r))) ??
+              null,
+            error: null,
+          }),
+        insert: (row: Record<string, unknown>) => {
+          h.inserts.push({ table, row })
+          ;(h.store[table] ??= []).push(row)
+          return Promise.resolve({ error: null })
+        },
+        update: () => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const uc: any = {
+            eq: () => uc,
+            then: (resolve: (v: { error: null }) => void) =>
+              resolve({ error: null }),
+          }
+          return uc
+        },
+      }
+      return chain
+    },
+  }),
+}))
+vi.mock('./config', () => ({
+  resolveZernioWacrmAccount: () =>
+    Promise.resolve({ accountId: 'acc-1', userId: 'user-1' }),
+}))
+
 import {
   isValidStatusTransition,
   mapZernioAttachmentType,
   mapZernioInbound,
   mapZernioOutboundEcho,
   mapZernioStatusEvent,
+  processZernioEvent,
   type ZernioInboundMessage,
 } from './inbound'
 
@@ -176,6 +237,70 @@ describe('mapZernioOutboundEcho — sends made outside wacrm', () => {
     expect(
       mapZernioOutboundEcho(outboundMessage({ text: null, attachments: [] })),
     ).toBeNull()
+  })
+})
+
+describe('processZernioOutboundEcho — dedupe contra envíos del bot', () => {
+  const CONV = { id: 'conv-1', account_id: 'acc-1', zernio_conversation_id: 'zc_1' }
+
+  function sentEvent(overrides: Partial<ZernioInboundMessage> = {}) {
+    return {
+      event: 'message.sent',
+      message: baseMessage({
+        direction: 'outgoing' as const,
+        platformMessageId: 'wamid.OUT9',
+        text: 'Te aparto el lugar para mañana a las 4:30 pm',
+        sentAt: new Date().toISOString(),
+        ...overrides,
+      }),
+    }
+  }
+
+  beforeEach(() => {
+    h.store.conversations = [{ ...CONV }]
+    h.store.messages = []
+    h.inserts = []
+  })
+
+  it('descarta el eco cuando el bot ya persistió el MISMO texto con OTRO message_id', async () => {
+    // El send devolvió el id interno de Zernio; el eco trae el wamid.
+    // Sin dedupe por contenido, cada respuesta del bot quedaba doble
+    // en el panel (incidente Acerotech).
+    h.store.messages = [
+      {
+        id: 'm-bot',
+        conversation_id: 'conv-1',
+        sender_type: 'bot',
+        content_text: 'Te aparto el lugar para mañana a las 4:30 pm',
+        message_id: 'zernio-internal-123',
+        created_at: new Date().toISOString(),
+      },
+    ]
+    await processZernioEvent(sentEvent())
+    expect(h.inserts.filter((i) => i.table === 'messages')).toHaveLength(0)
+  })
+
+  it('sí persiste un eco humano (texto que el bot no mandó)', async () => {
+    await processZernioEvent(sentEvent({ text: 'Aquí el doctor, nos vemos mañana' }))
+    const inserted = h.inserts.filter((i) => i.table === 'messages')
+    expect(inserted).toHaveLength(1)
+    expect(inserted[0].row.sender_type).toBe('agent')
+    expect(inserted[0].row.content_text).toBe('Aquí el doctor, nos vemos mañana')
+  })
+
+  it('sigue deduplicando por message_id cuando los ids sí coinciden', async () => {
+    h.store.messages = [
+      {
+        id: 'm-bot',
+        conversation_id: 'conv-1',
+        sender_type: 'bot',
+        content_text: 'otro texto distinto',
+        message_id: 'wamid.OUT9',
+        created_at: new Date().toISOString(),
+      },
+    ]
+    await processZernioEvent(sentEvent())
+    expect(h.inserts.filter((i) => i.table === 'messages')).toHaveLength(0)
   })
 })
 

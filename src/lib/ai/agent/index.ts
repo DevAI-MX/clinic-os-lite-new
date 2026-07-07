@@ -9,6 +9,7 @@ export type {
 } from './loop'
 export { buildClinicalSystemPrompt } from './prompt'
 export type { ClinicalPromptArgs } from './prompt'
+export { buildPatientStateLines } from './state'
 export { CLINICAL_TOOLS } from './tools'
 export type { AgentToolContext, ToolDefinition, ToolExecutor, ToolExecResult } from './tools'
 export { FUNNEL_PIPELINE_NAME } from './execute'

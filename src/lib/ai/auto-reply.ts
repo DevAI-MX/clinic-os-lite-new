@@ -9,6 +9,7 @@ import { latestUserMessage } from './query'
 import {
   runClinicalAgent,
   buildClinicalSystemPrompt,
+  buildPatientStateLines,
   clinicTimezone,
 } from './agent'
 import { engineSendText } from '@/lib/flows/meta-send'
@@ -86,9 +87,26 @@ export async function dispatchInboundToAiReply(
     if (convErr || !conv) return
     if (conv.assigned_agent_id) return // a human owns this thread
     if (conv.ai_autoreply_disabled) return // handed off / turned off here
+    // Tope OPCIONAL (0 = sin tope, el default desde la migración 042 —
+    // decisión de producto post-Acerotech: el agente no debe toparse).
     // Cheap early-out; the authoritative cap check is the atomic claim
     // below (this read can race a concurrent inbound).
-    if (conv.ai_reply_count >= config.autoReplyMaxPerConversation) return
+    const replyCap = config.autoReplyMaxPerConversation
+    if (replyCap > 0 && conv.ai_reply_count >= replyCap) {
+      // Tope alcanzado: NUNCA fantasmear al paciente en silencio
+      // (incidente Acerotech: el bot enmudeció justo cuando el lead
+      // aceptó la cita). Se apaga el auto-reply y se avisa al equipo
+      // UNA vez para que una persona tome el hilo.
+      await retireConversationToHumans(db, {
+        accountId,
+        conversationId,
+        contactId,
+        configOwnerUserId,
+        title: 'El agente llegó a su tope de respuestas',
+        body: 'sigue escribiendo, pero el agente alcanzó el máximo de respuestas automáticas de esta conversación. El hilo queda en manos del equipo — respóndele tú.',
+      })
+      return
+    }
 
     // Debounce: if the patient is mid-burst (several messages in a row),
     // wait for it to go quiet so we answer once, coherently, instead of
@@ -126,11 +144,24 @@ export async function dispatchInboundToAiReply(
       const timezone = clinicTimezone()
       const now = new Date()
 
+      // Estado REAL del paciente (cita apartada, anticipo en revisión)
+      // leído de la BD: las corridas no heredan los tool_results de
+      // corridas previas y sin esto el modelo contradice o re-pregunta
+      // lo que él mismo ya agendó.
+      const stateLines = await buildPatientStateLines({
+        db,
+        accountId,
+        contactId,
+        timezone,
+        now,
+      })
+
       const systemPrompt = buildClinicalSystemPrompt({
         userPrompt: config.systemPrompt,
         contactName,
         timezone,
         now,
+        stateLines,
       })
 
       const result = await runClinicalAgent({
@@ -176,11 +207,17 @@ export async function dispatchInboundToAiReply(
     if (handoff || !text) {
       // The model can't (or shouldn't) answer — stop auto-replying on
       // this thread and leave the inbound unanswered so it surfaces in
-      // the inbox for a human. Sticky until an admin re-enables.
-      await db
-        .from('conversations')
-        .update({ ai_autoreply_disabled: true })
-        .eq('id', conversationId)
+      // the inbox for a human. Sticky until an admin re-enables. El
+      // equipo recibe UN aviso: sin notificación, el paciente quedaba
+      // esperando sin que nadie supiera que el hilo era suyo.
+      await retireConversationToHumans(db, {
+        accountId,
+        conversationId,
+        contactId,
+        configOwnerUserId,
+        title: 'El agente pasó una conversación al equipo',
+        body: 'escribió algo que el agente prefirió no responder en automático. El hilo queda en manos del equipo — respóndele tú.',
+      })
       return
     }
 
@@ -201,14 +238,33 @@ export async function dispatchInboundToAiReply(
     // another inbound just took the last slot, `claimed` is false and we
     // skip the send. (We consume a slot slightly before the send lands —
     // fail-safe: under-reply rather than over-reply.)
+    // Con tope 0 (sin tope) el claim sigue corriendo — mantiene el
+    // contador ai_reply_count para métricas — pero contra un máximo
+    // que nunca se alcanza (int4 máximo de Postgres).
     const { data: claimed, error: claimErr } = await db.rpc(
       'claim_ai_reply_slot',
       {
         conversation_id: conversationId,
-        max_replies: config.autoReplyMaxPerConversation,
+        max_replies:
+          config.autoReplyMaxPerConversation > 0
+            ? config.autoReplyMaxPerConversation
+            : 2147483647,
       },
     )
-    if (claimErr || claimed !== true) return
+    if (claimErr) return
+    if (claimed !== true) {
+      // Un inbound concurrente tomó el último slot: mismo tratamiento
+      // que el tope — el hilo pasa al equipo con aviso, nunca silencio.
+      await retireConversationToHumans(db, {
+        accountId,
+        conversationId,
+        contactId,
+        configOwnerUserId,
+        title: 'El agente llegó a su tope de respuestas',
+        body: 'sigue escribiendo, pero el agente alcanzó el máximo de respuestas automáticas de esta conversación. El hilo queda en manos del equipo — respóndele tú.',
+      })
+      return
+    }
 
     if (zernioConversationId) {
       // Vino por Zernio: responde en la MISMA conversación de inbox
@@ -248,6 +304,22 @@ export async function dispatchInboundToAiReply(
         if (msgErr && !isUniqueViolation(msgErr)) {
           console.error('[ai auto-reply] zernio reply sent but DB insert failed:', msgErr)
         }
+        // Barrido final: si el eco aterrizó ENTRE el relabel de arriba y
+        // este insert, quedó una fila 'agent' gemela con otro message_id
+        // (el UNIQUE de 039 no la ve) y el panel mostraba cada respuesta
+        // del bot dos veces. Nuestra fila 'bot' ya existe; la gemela
+        // sobra. La otra dirección (eco DESPUÉS del insert) la corta el
+        // dedupe por contenido de processZernioOutboundEcho.
+        const { error: sweepErr } = await db
+          .from('messages')
+          .delete()
+          .eq('conversation_id', conversationId)
+          .eq('sender_type', 'agent')
+          .eq('content_text', text)
+          .gte('created_at', echoWindowIso)
+        if (sweepErr) {
+          console.error('[ai auto-reply] duplicate-echo sweep failed:', sweepErr)
+        }
       }
       await db
         .from('conversations')
@@ -273,6 +345,58 @@ export async function dispatchInboundToAiReply(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+interface RetireArgs {
+  accountId: string
+  conversationId: string
+  contactId: string
+  configOwnerUserId: string
+  title: string
+  /** Se antepone el nombre del contacto: "<nombre> <body>". */
+  body: string
+}
+
+/**
+ * Apaga el auto-reply de la conversación y avisa al equipo UNA vez.
+ * El UPDATE condicionado (`ai_autoreply_disabled = false`) hace de
+ * candado: solo la invocación que realmente apaga el flag notifica,
+ * así una ráfaga de inbounds tras el tope no spamea notificaciones.
+ * Best-effort: nunca lanza.
+ */
+async function retireConversationToHumans(
+  db: SupabaseClient,
+  args: RetireArgs,
+): Promise<void> {
+  try {
+    const { data: flipped } = await db
+      .from('conversations')
+      .update({ ai_autoreply_disabled: true })
+      .eq('id', args.conversationId)
+      .eq('ai_autoreply_disabled', false)
+      .select('id')
+    if (!flipped || flipped.length === 0) return // ya estaba apagado
+
+    const { data: contact } = await db
+      .from('contacts')
+      .select('name, phone')
+      .eq('id', args.contactId)
+      .maybeSingle()
+    const who = contact?.name || contact?.phone || 'Un paciente'
+
+    await db.from('notifications').insert({
+      account_id: args.accountId,
+      user_id: args.configOwnerUserId,
+      type: 'ai_escalation',
+      conversation_id: args.conversationId,
+      contact_id: args.contactId,
+      actor_user_id: null,
+      title: args.title,
+      body: `${who} ${args.body}`,
+    })
+  } catch (err) {
+    console.error('[ai auto-reply] retire-to-humans failed:', err)
+  }
 }
 
 /**

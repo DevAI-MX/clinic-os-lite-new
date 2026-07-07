@@ -509,6 +509,28 @@ async function processZernioOutboundEcho(payload: ZernioWebhookEvent): Promise<v
     .maybeSingle()
   if (existing) return // persisted at send time (panel/bot) or a replay
 
+  // Dedupe por CONTENIDO contra envíos del bot: el camino de envío
+  // persiste su fila con el id que devolvió el send de Zernio (o uno
+  // sintético), mientras que este eco trae el wamid — ids distintos
+  // para el MISMO mensaje, así que ni el dedupe de arriba ni el UNIQUE
+  // de la migración 039 ven la colisión y cada respuesta del bot
+  // quedaba doble en el panel. Un texto idéntico a una fila 'bot'
+  // reciente de esta conversación es este mismo envío. (Solo contra
+  // 'bot': un humano sí puede repetir legítimamente el mismo texto.)
+  if (mapped.contentText) {
+    const windowIso = new Date(Date.now() - 5 * 60_000).toISOString()
+    const { data: recentBot } = await db
+      .from('messages')
+      .select('id')
+      .eq('conversation_id', conversation.id)
+      .eq('sender_type', 'bot')
+      .eq('content_text', mapped.contentText)
+      .gte('created_at', windowIso)
+      .limit(1)
+      .maybeSingle()
+    if (recentBot) return
+  }
+
   const { error: msgError } = await db.from('messages').insert({
     conversation_id: conversation.id,
     sender_type: 'agent',

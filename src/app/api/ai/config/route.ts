@@ -92,8 +92,9 @@ export async function POST(request: Request) {
     const autoReplyEnabled = body.auto_reply_enabled === true
 
     let maxPer = Number(body.auto_reply_max_per_conversation)
-    if (!Number.isFinite(maxPer)) maxPer = 3
-    maxPer = Math.min(20, Math.max(1, Math.floor(maxPer)))
+    if (!Number.isFinite(maxPer)) maxPer = 0
+    // Rango del CHECK de la migración 042 (0..10000; 0 = sin tope).
+    maxPer = Math.min(10000, Math.max(0, Math.floor(maxPer)))
 
     const rawKey = typeof body.api_key === 'string' ? body.api_key.trim() : ''
 

@@ -164,6 +164,44 @@ async function loadProcedure(ctx: AgentToolContext, procedureId: string) {
   return data
 }
 
+/**
+ * Procedimiento de valoración/consulta del catálogo (con anticipo
+ * definido). Es el respaldo de la regla de oro: TODA valoración lleva
+ * anticipo aunque el modelo agende sin procedure_id o con un
+ * procedimiento de interés que no tiene anticipo propio (p. ej.
+ * "Carillas: se cotiza tras valoración").
+ */
+async function findValoracionProcedure(ctx: AgentToolContext) {
+  const { data } = await ctx.db
+    .from('procedures')
+    .select('id, name, duration_minutes, deposit_amount, price_min, currency')
+    .eq('account_id', ctx.accountId)
+    .eq('is_active', true)
+    .or('name.ilike.%valoraci%,name.ilike.%consulta%')
+    .not('deposit_amount', 'is', null)
+    .order('price_min', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  return data
+}
+
+/** Cuentas bancarias activas de la clínica (para compartir el anticipo). */
+async function loadActivePaymentAccounts(ctx: AgentToolContext) {
+  const { data } = await ctx.db
+    .from('payment_accounts')
+    .select('bank, holder, clabe, account_number, instructions')
+    .eq('account_id', ctx.accountId)
+    .eq('is_active', true)
+    .order('created_at', { ascending: true })
+  return (data ?? []).map((c) => ({
+    banco: c.bank,
+    titular: c.holder,
+    clabe: c.clabe ?? null,
+    cuenta: c.account_number ?? null,
+    indicaciones: c.instructions ?? null,
+  }))
+}
+
 async function dropNotification(
   ctx: AgentToolContext,
   type: string,
@@ -744,7 +782,26 @@ async function agendarCita(
   const tipo = APPOINTMENT_TYPES.includes(input.tipo as never)
     ? input.tipo
     : 'valoracion'
-  const depositAmount = num(proc?.deposit_amount)
+
+  // Regla de oro del anticipo: toda VALORACIÓN se aparta con anticipo.
+  // Si el procedimiento de interés no define uno (o no se pasó
+  // procedure_id), el anticipo sale del procedimiento de valoración/
+  // consulta del catálogo — sin este respaldo, el agente apartaba
+  // valoraciones sin pedir un peso (incidente Acerotech).
+  let depositAmount = num(proc?.deposit_amount)
+  let depositCurrency = proc?.currency ?? 'MXN'
+  let valoracionRef: string | null = null
+  if (
+    depositAmount == null &&
+    (tipo === 'valoracion' || tipo === 'valoracion_virtual')
+  ) {
+    const valoracion = await findValoracionProcedure(ctx)
+    if (valoracion) {
+      depositAmount = num(valoracion.deposit_amount)
+      depositCurrency = valoracion.currency ?? 'MXN'
+      valoracionRef = valoracion.name
+    }
+  }
   const depositStatus = depositAmount != null ? 'pendiente' : 'no_aplica'
 
   const row = {
@@ -794,12 +851,17 @@ async function agendarCita(
     `${ctx.contactName ?? 'Un paciente'} — ${label}${
       proc ? ` · ${proc.name}` : ''
     }. Pendiente de confirmar${
-      depositAmount != null ? ` (anticipo ${money(depositAmount, proc?.currency)})` : ''
+      depositAmount != null ? ` (anticipo ${money(depositAmount, depositCurrency)})` : ''
     }.`,
   )
 
   // Hito del embudo: la cita apartada mueve el deal en el tablero.
   await syncFunnelDeal(ctx, 'Cita apartada', { value: num(proc?.price_min) })
+
+  // Con anticipo requerido, los datos de pago van en el MISMO resultado:
+  // el modelo los comparte de inmediato en vez de depender de que
+  // recuerde llamar consultar_datos_pago en otra ronda.
+  const cuentas = depositAmount != null ? await loadActivePaymentAccounts(ctx) : []
 
   return ok({
     ok: true,
@@ -808,10 +870,14 @@ async function agendarCita(
     inicio: start.toISOString(),
     etiqueta: label,
     estado: 'pendiente',
-    anticipo_requerido: depositAmount != null ? money(depositAmount, proc?.currency) : null,
+    anticipo_requerido: depositAmount != null ? money(depositAmount, depositCurrency) : null,
+    ...(valoracionRef ? { anticipo_de: valoracionRef } : {}),
+    ...(depositAmount != null ? { datos_pago: cuentas } : {}),
     instruccion_para_paciente:
       depositAmount != null
-        ? `Dile que le APARTAS el lugar para ${label} y que, para dejarlo asegurado, necesita el anticipo de ${money(depositAmount, proc?.currency)}; pídele el comprobante. NO digas que la cita ya quedó confirmada.`
+        ? cuentas.length > 0
+          ? `Dile que le APARTAS el lugar para ${label} y que solo queda ASEGURADO al recibir su anticipo de ${money(depositAmount, depositCurrency)}. En el MISMO mensaje comparte los datos_pago tal cual (nunca otros) y pídele el comprobante (imagen). NO digas que la cita ya quedó confirmada.`
+          : `Dile que le APARTAS el lugar para ${label} y que requiere un anticipo de ${money(depositAmount, depositCurrency)}, pero la clínica NO tiene datos bancarios configurados: NO inventes una cuenta; dile que en un momento el equipo le comparte los datos por aquí y deja el aviso con avisar_equipo.`
         : `Dile que le APARTAS el lugar para ${label} y que el equipo se lo confirma por aquí. NO digas que ya quedó confirmada en firme.`,
   })
 }
@@ -975,22 +1041,32 @@ async function clasificarLead(
       .eq('account_id', ctx.accountId)
   }
 
-  // Etiqueta de embudo: una sola vigente por contacto. Las tags son
-  // por-usuario (modelo wacrm pre-017); usamos al dueño de la cuenta.
+  // Etiqueta de embudo: una sola vigente por contacto. tags.account_id
+  // es NOT NULL desde la migración 017 — omitirlo hacía fallar el
+  // insert en silencio y el CRM nunca mostraba la calificación
+  // (incidente Acerotech). user_id sigue siendo el dueño de la cuenta.
   const tagName = `lead:${input.etapa}`
   const { data: tag } = await ctx.db
     .from('tags')
     .select('id')
-    .eq('user_id', ctx.userId)
+    .eq('account_id', ctx.accountId)
     .eq('name', tagName)
     .maybeSingle()
   let tagId = tag?.id
   if (!tagId) {
-    const { data: created } = await ctx.db
+    const { data: created, error: tagErr } = await ctx.db
       .from('tags')
-      .insert({ user_id: ctx.userId, name: tagName, color: '#0ea5e9' })
+      .insert({
+        user_id: ctx.userId,
+        account_id: ctx.accountId,
+        name: tagName,
+        color: '#0ea5e9',
+      })
       .select('id')
       .single()
+    if (tagErr) {
+      console.error('[clinical agent] clasificar_lead: tag insert failed:', tagErr.message)
+    }
     tagId = created?.id
   }
 
@@ -1000,7 +1076,7 @@ async function clasificarLead(
     const { data: funnelTags } = await ctx.db
       .from('tags')
       .select('id')
-      .eq('user_id', ctx.userId)
+      .eq('account_id', ctx.accountId)
       .like('name', 'lead:%')
     const otherIds = (funnelTags ?? []).map((t) => t.id).filter((id) => id !== tagId)
     if (otherIds.length > 0) {
@@ -1030,6 +1106,7 @@ async function clasificarLead(
   return ok({
     ok: true,
     etapa: input.etapa,
+    etiqueta_crm: tagId ? 'actualizada' : 'no_actualizada',
     nombre_guardado: input.nombre?.trim() || null,
     nota: 'CRM actualizado. No se lo menciones al paciente; sigue la conversación con naturalidad.',
   })
