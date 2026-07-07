@@ -2,13 +2,16 @@
 
 import { useCallback, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import type { ConciergeBlock } from '@/lib/ai/concierge/blocks';
 
 // ============================================================
 // Estado del chat del Concierge: hidrata el historial desde Supabase
 // (RLS) y consume el stream NDJSON de /api/ai/concierge/chat evento
 // por evento. Las action cards viven en un mapa aparte (por id) para
 // que confirmar/cancelar actualice una sola entrada sin re-mapear el
-// transcript.
+// transcript. Los bloques (widget de agenda, chips de navegación) y
+// los adjuntos viajan en content_json y se re-pintan igual desde el
+// historial; la navegación solo se DISPARA con el evento en vivo.
 // ============================================================
 
 export type ConciergeActionStatus =
@@ -30,15 +33,25 @@ export interface ConciergeAction {
   error?: string;
 }
 
+/** Referencia a un archivo ya subido al bucket chat-media. */
+export interface ConciergeAttachment {
+  url: string;
+  mime: string;
+  name: string;
+}
+
 export interface ConciergeMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   actionIds: string[];
+  blocks: ConciergeBlock[];
+  attachments: ConciergeAttachment[];
+  viaVoz: boolean;
 }
 
 interface StreamEvent {
-  type: 'session' | 'status' | 'action_proposal' | 'text' | 'done' | 'error';
+  type: 'session' | 'status' | 'action_proposal' | 'block' | 'text' | 'done' | 'error';
   sessionId?: string;
   label?: string;
   action?: {
@@ -49,14 +62,35 @@ interface StreamEvent {
     status: 'proposed';
     expiresAt: string;
   };
+  block?: ConciergeBlock;
   text?: string;
   message?: string;
+}
+
+export interface SendExtra {
+  attachments?: ConciergeAttachment[];
+  via?: 'voz';
+}
+
+export interface SendResult {
+  sessionId: string | null;
+  error: string | null;
+  /** Respuesta final del asistente (para TTS/auto-play). */
+  reply: { id: string; text: string } | null;
 }
 
 let tempCounter = 0;
 const tempId = () => `tmp-${++tempCounter}`;
 
-export function useConciergeChat() {
+function emptyMessage(
+  id: string,
+  role: 'user' | 'assistant',
+  content = '',
+): ConciergeMessage {
+  return { id, role, content, actionIds: [], blocks: [], attachments: [], viaVoz: false };
+}
+
+export function useConciergeChat(opts: { onNavigate?: (href: string) => void } = {}) {
   const supabase = createClient();
   const [messages, setMessages] = useState<ConciergeMessage[]>([]);
   const [actions, setActions] = useState<Record<string, ConciergeAction>>({});
@@ -66,6 +100,9 @@ export function useConciergeChat() {
   // Evita que una hidratación vieja pise una más nueva si el usuario
   // cambia de sesión rápido.
   const loadSeq = useRef(0);
+  // Ref para no re-crear `send` cuando cambia el callback de navegación.
+  const onNavigateRef = useRef(opts.onNavigate);
+  onNavigateRef.current = opts.onNavigate;
 
   const reset = useCallback(() => {
     setMessages([]);
@@ -118,12 +155,22 @@ export function useConciergeChat() {
         }
 
         setMessages(
-          (msgRes.data ?? []).map((m) => ({
-            id: m.id as string,
-            role: m.role as 'user' | 'assistant',
-            content: (m.content as string) ?? '',
-            actionIds: actionsByMessage[m.id as string] ?? [],
-          })),
+          (msgRes.data ?? []).map((m) => {
+            const json = (m.content_json ?? {}) as {
+              blocks?: ConciergeBlock[];
+              attachments?: ConciergeAttachment[];
+              via_voz?: boolean;
+            };
+            return {
+              id: m.id as string,
+              role: m.role as 'user' | 'assistant',
+              content: (m.content as string) ?? '',
+              actionIds: actionsByMessage[m.id as string] ?? [],
+              blocks: Array.isArray(json.blocks) ? json.blocks : [],
+              attachments: Array.isArray(json.attachments) ? json.attachments : [],
+              viaVoz: json.via_voz === true,
+            };
+          }),
         );
         setActions(actionMap);
       } finally {
@@ -134,34 +181,41 @@ export function useConciergeChat() {
   );
 
   /**
-   * Manda un turno. Devuelve el sessionId (nuevo si no había) o null si
-   * el turno falló antes de crear sesión.
+   * Manda un turno. Devuelve el sessionId (nuevo si no había), el error
+   * del turno y la respuesta final del asistente (para auto-TTS).
    */
   const send = useCallback(
     async (
       sessionId: string | null,
       text: string,
-    ): Promise<{ sessionId: string | null; error: string | null }> => {
+      extra: SendExtra = {},
+    ): Promise<SendResult> => {
       setSending(true);
       setStatusLabel(null);
 
+      const attachments = extra.attachments ?? [];
       const userMsg: ConciergeMessage = {
-        id: tempId(),
-        role: 'user',
-        content: text,
-        actionIds: [],
+        ...emptyMessage(tempId(), 'user', text),
+        attachments,
+        viaVoz: extra.via === 'voz',
       };
       const assistantMsgId = tempId();
       setMessages((prev) => [...prev, userMsg]);
 
       let resolvedSessionId: string | null = sessionId;
       let turnError: string | null = null;
+      let replyText = '';
 
       try {
         const res = await fetch('/api/ai/concierge/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionId, message: text }),
+          body: JSON.stringify({
+            sessionId,
+            message: text,
+            ...(attachments.length > 0 ? { attachments } : {}),
+            ...(extra.via ? { via: extra.via } : {}),
+          }),
         });
 
         if (!res.ok || !res.body) {
@@ -171,13 +225,25 @@ export function useConciergeChat() {
               ? 'ai_not_configured'
               : (data.error ?? 'No pude contactar al Concierge.');
           setMessages((prev) => prev.filter((m) => m.id !== userMsg.id));
-          return { sessionId: resolvedSessionId, error: turnError };
+          return { sessionId: resolvedSessionId, error: turnError, reply: null };
         }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
         let assistantInserted = false;
+
+        // Inserta el mensaje del asistente en el primer evento que lo
+        // necesite y aplícale `mutate` (todas las rutas comparten esto).
+        const upsertAssistant = (mutate: (m: ConciergeMessage) => ConciergeMessage) => {
+          setMessages((prev) => {
+            if (!assistantInserted) {
+              assistantInserted = true;
+              return [...prev, mutate(emptyMessage(assistantMsgId, 'assistant'))];
+            }
+            return prev.map((m) => (m.id === assistantMsgId ? mutate(m) : m));
+          });
+        };
 
         const handleEvent = (event: StreamEvent) => {
           switch (event.type) {
@@ -201,37 +267,25 @@ export function useConciergeChat() {
                   expiresAt: a.expiresAt,
                 },
               }));
-              setMessages((prev) => {
-                if (!assistantInserted) {
-                  assistantInserted = true;
-                  return [
-                    ...prev,
-                    { id: assistantMsgId, role: 'assistant', content: '', actionIds: [a.id] },
-                  ];
-                }
-                return prev.map((m) =>
-                  m.id === assistantMsgId
-                    ? { ...m, actionIds: [...m.actionIds, a.id] }
-                    : m,
-                );
-              });
+              upsertAssistant((m) => ({ ...m, actionIds: [...m.actionIds, a.id] }));
+              break;
+            }
+            case 'block': {
+              const block = event.block;
+              if (!block) break;
+              upsertAssistant((m) => ({ ...m, blocks: [...m.blocks, block] }));
+              // Navegación autónoma: solo el evento EN VIVO mueve la
+              // vista (el historial re-pinta el chip sin navegar).
+              if (block.kind === 'navegacion') {
+                onNavigateRef.current?.(block.href);
+              }
               break;
             }
             case 'text': {
               const content = event.text ?? '';
+              replyText = content;
               setStatusLabel(null);
-              setMessages((prev) => {
-                if (!assistantInserted) {
-                  assistantInserted = true;
-                  return [
-                    ...prev,
-                    { id: assistantMsgId, role: 'assistant', content, actionIds: [] },
-                  ];
-                }
-                return prev.map((m) =>
-                  m.id === assistantMsgId ? { ...m, content } : m,
-                );
-              });
+              upsertAssistant((m) => ({ ...m, content }));
               break;
             }
             case 'error':
@@ -264,12 +318,20 @@ export function useConciergeChat() {
         if (turnError) {
           // El turno del usuario SÍ quedó persistido server-side; solo
           // avisamos del fallo sin borrar nada.
-          return { sessionId: resolvedSessionId, error: turnError };
+          return { sessionId: resolvedSessionId, error: turnError, reply: null };
         }
-        return { sessionId: resolvedSessionId, error: null };
+        return {
+          sessionId: resolvedSessionId,
+          error: null,
+          reply: replyText ? { id: assistantMsgId, text: replyText } : null,
+        };
       } catch {
         setMessages((prev) => prev.filter((m) => m.id !== userMsg.id));
-        return { sessionId: resolvedSessionId, error: 'No pude contactar al Concierge.' };
+        return {
+          sessionId: resolvedSessionId,
+          error: 'No pude contactar al Concierge.',
+          reply: null,
+        };
       } finally {
         setSending(false);
         setStatusLabel(null);

@@ -7,7 +7,10 @@ import {
   CONCIERGE_TOOLS,
   createConciergeExecutor,
   buildConciergeSystemPrompt,
+  parseAttachments,
+  buildAttachmentNotes,
   type ProposedAction,
+  type ConciergeBlock,
 } from '@/lib/ai/concierge'
 import { AiError, type ChatMessage } from '@/lib/ai/types'
 
@@ -28,6 +31,9 @@ const MAX_TURNS = 20
  *   {type:'session', sessionId}          la sesión (nueva o existente)
  *   {type:'status', label}               actividad de tools en curso
  *   {type:'action_proposal', action}     tarjeta de confirmación nueva
+ *   {type:'block', block}                widget estructurado (agenda,
+ *                                        navegación — el cliente navega
+ *                                        al recibirlo en vivo)
  *   {type:'text', text}                  respuesta final del asistente
  *   {type:'done', messageId}             turno persistido
  *   {type:'error', message}              fallo del turno
@@ -43,7 +49,17 @@ export async function POST(request: Request) {
     const message = typeof body?.message === 'string' ? body.message.trim() : ''
     const sessionIdIn =
       typeof body?.sessionId === 'string' && body.sessionId ? body.sessionId : null
-    if (!message) {
+    const viaVoz = body?.via === 'voz'
+
+    // Adjuntos: referencias a NUESTRO bucket público (el cliente ya los
+    // subió); URL fuera del bucket o mime fuera de allow-list → 400.
+    const storageBase = `${process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''}/storage/v1/object/public/chat-media/`
+    const attachments = parseAttachments(body?.attachments, storageBase)
+    if (attachments === null) {
+      return NextResponse.json({ error: 'invalid attachments' }, { status: 400 })
+    }
+
+    if (!message && attachments.length === 0) {
       return NextResponse.json({ error: 'message is required' }, { status: 400 })
     }
 
@@ -79,7 +95,8 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'Session not found' }, { status: 404 })
       }
     } else {
-      const title = message.length > 48 ? `${message.slice(0, 48)}…` : message
+      const titleSource = message || `Adjuntos: ${attachments.map((a) => a.name).join(', ')}`
+      const title = titleSource.length > 48 ? `${titleSource.slice(0, 48)}…` : titleSource
       const { data: created, error } = await supabase
         .from('assistant_sessions')
         .insert({ account_id: accountId, user_id: userId, title })
@@ -94,11 +111,19 @@ export async function POST(request: Request) {
 
     // --- Persistir el turno del usuario ANTES de llamar al modelo: un
     // fallo del proveedor no debe perder lo que el usuario escribió.
+    const userContentJson =
+      attachments.length > 0 || viaVoz
+        ? {
+            ...(attachments.length > 0 ? { attachments } : {}),
+            ...(viaVoz ? { via_voz: true } : {}),
+          }
+        : null
     const { error: userMsgErr } = await supabase.from('assistant_messages').insert({
       session_id: sessionId,
       account_id: accountId,
       role: 'user',
       content: message,
+      content_json: userContentJson,
     })
     if (userMsgErr) {
       console.error('[ai/concierge] user message insert error:', userMsgErr)
@@ -106,21 +131,32 @@ export async function POST(request: Request) {
     }
 
     // --- Historial server-side (incluye el turno recién insertado).
+    // Los turnos con adjuntos llevan un marcador con los nombres para
+    // que el modelo recuerde el contexto en turnos posteriores (el
+    // análisis de visión solo corre para el turno actual).
     const { data: historyRows } = await supabase
       .from('assistant_messages')
-      .select('role, content')
+      .select('role, content, content_json')
       .eq('session_id', sessionId)
       .in('role', ['user', 'assistant'])
       .order('created_at', { ascending: true })
 
-    const messages: ChatMessage[] = (historyRows ?? [])
-      .filter(
-        (m): m is { role: 'user' | 'assistant'; content: string } =>
-          (m.role === 'user' || m.role === 'assistant') &&
-          typeof m.content === 'string' &&
-          m.content.trim().length > 0,
+    const messages: ChatMessage[] = []
+    for (const m of historyRows ?? []) {
+      if (m.role !== 'user' && m.role !== 'assistant') continue
+      let content = typeof m.content === 'string' ? m.content.trim() : ''
+      const attNames = (
+        (m.content_json as { attachments?: { name?: string }[] } | null)?.attachments ?? []
       )
-      .slice(-MAX_TURNS)
+        .map((a) => a?.name)
+        .filter((n): n is string => typeof n === 'string' && n.length > 0)
+      if (attNames.length > 0) {
+        content = `${content}${content ? '\n' : ''}[Adjuntó: ${attNames.join(', ')}]`
+      }
+      if (!content) continue
+      messages.push({ role: m.role, content })
+    }
+    messages.splice(0, Math.max(0, messages.length - MAX_TURNS))
 
     const timezone = clinicTimezone()
     const now = new Date()
@@ -135,7 +171,25 @@ export async function POST(request: Request) {
         emit({ type: 'session', sessionId: finalSessionId })
 
         const proposals: ProposedAction[] = []
+        const blocks: ConciergeBlock[] = []
         try {
+          // Visión sobre los adjuntos del turno actual (best-effort):
+          // las notas se anexan al último turno del usuario en memoria,
+          // nunca se persisten.
+          if (attachments.length > 0) {
+            emit({ type: 'status', label: 'Analizando adjuntos…' })
+            const notes = await buildAttachmentNotes({
+              attachments,
+              provider: config.provider,
+              apiKey: config.apiKey,
+              model: config.model,
+            })
+            const last = messages[messages.length - 1]
+            if (notes.length > 0 && last?.role === 'user') {
+              last.content = `${last.content}\n\n${notes.join('\n\n')}`
+            }
+          }
+
           const executeTool = createConciergeExecutor({
             sessionId: finalSessionId,
             events: {
@@ -143,6 +197,10 @@ export async function POST(request: Request) {
               onProposal: (action) => {
                 proposals.push(action)
                 emit({ type: 'action_proposal', action })
+              },
+              onBlock: (block) => {
+                blocks.push(block)
+                emit({ type: 'block', block })
               },
             },
           })
@@ -172,7 +230,14 @@ export async function POST(request: Request) {
 
           // --- Persistir el turno del asistente + ligar propuestas.
           const contentJson =
-            proposals.length > 0 ? { action_ids: proposals.map((p) => p.id) } : null
+            proposals.length > 0 || blocks.length > 0
+              ? {
+                  ...(proposals.length > 0
+                    ? { action_ids: proposals.map((p) => p.id) }
+                    : {}),
+                  ...(blocks.length > 0 ? { blocks } : {}),
+                }
+              : null
           const { data: assistantRow, error: aErr } = await supabase
             .from('assistant_messages')
             .insert({

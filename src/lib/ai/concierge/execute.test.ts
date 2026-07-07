@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { createConciergeExecutor, type ProposedAction } from './execute'
+import type { ConciergeBlock } from './blocks'
 import type { AgentToolContext } from '../agent'
 
 // ------------------------------------------------------------
@@ -137,11 +138,14 @@ function ctxWith(db: ReturnType<typeof fakeDb>): AgentToolContext {
   }
 }
 
-function makeExecutor(opts: { proposals?: ProposedAction[] } = {}) {
+function makeExecutor(
+  opts: { proposals?: ProposedAction[]; blocks?: ConciergeBlock[] } = {},
+) {
   return createConciergeExecutor({
     sessionId: 'sess-1',
     events: {
       onProposal: (a) => opts.proposals?.push(a),
+      onBlock: (b) => opts.blocks?.push(b),
     },
   })
 }
@@ -301,6 +305,52 @@ describe('tools de lectura del Concierge', () => {
     expect(out.citas[0].contact_id).toBe('c-1')
   })
 
+  it('consultar_agenda_dia emite el bloque de agenda con datos crudos para el widget', async () => {
+    const db = fakeDb({
+      appointments: [
+        {
+          id: 'a-1',
+          account_id: ACCOUNT,
+          contact_id: 'c-1',
+          starts_at: '2026-07-08T18:00:00Z',
+          status: 'pendiente',
+          appointment_type: 'valoracion',
+          deposit_status: 'pendiente',
+          deposit_amount: 350,
+        },
+      ],
+      contacts: [{ id: 'c-1', account_id: ACCOUNT, name: 'María', phone: '555' }],
+    })
+    const blocks: ConciergeBlock[] = []
+    const exec = makeExecutor({ blocks })
+
+    await exec('consultar_agenda_dia', {}, ctxWith(db))
+
+    expect(blocks).toHaveLength(1)
+    const block = blocks[0]
+    expect(block.kind).toBe('agenda')
+    if (block.kind !== 'agenda') return
+    // NOW = 2026-07-08T16:00Z → 10:00 en America/Mexico_City.
+    expect(block.fecha).toBe('2026-07-08')
+    expect(block.citas[0].appointment_id).toBe('a-1')
+    // El widget recibe los estados CRUDOS (para colorear chips)...
+    expect(block.citas[0].estado).toBe('pendiente')
+    expect(block.citas[0].anticipo_estado).toBe('pendiente')
+    // ...y la etiqueta legible aparte.
+    expect(block.citas[0].estado_label).toBe('pendiente de confirmar')
+  })
+
+  it('agenda sin citas también emite el bloque (widget vacío)', async () => {
+    const db = fakeDb()
+    const blocks: ConciergeBlock[] = []
+    const exec = makeExecutor({ blocks })
+
+    await exec('consultar_agenda_dia', { fecha: '2026-07-20' }, ctxWith(db))
+
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0]).toMatchObject({ kind: 'agenda', fecha: '2026-07-20', citas: [] })
+  })
+
   it('consultar_embudo incluye stage_id y deal_id (los necesita mover_deal)', async () => {
     const db = fakeDb({
       pipelines: [{ id: 'pipe-1', account_id: ACCOUNT, name: 'Embudo IA' }],
@@ -324,5 +374,38 @@ describe('tools de lectura del Concierge', () => {
     const out = JSON.parse(res.content)
     expect(out.etapas[0].stage_id).toBe('st-1')
     expect(out.etapas[0].deals[0].deal_id).toBe('d-1')
+  })
+})
+
+describe('abrir_seccion (navegación autónoma)', () => {
+  it('emite el bloque de navegación con href de la allow-list', async () => {
+    const db = fakeDb()
+    const blocks: ConciergeBlock[] = []
+    const exec = makeExecutor({ blocks })
+
+    const res = await exec('abrir_seccion', { seccion: 'calendario' }, ctxWith(db))
+
+    expect(res.isError).toBeUndefined()
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0]).toMatchObject({
+      kind: 'navegacion',
+      seccion: 'calendario',
+      href: '/calendario',
+      label: 'Calendario',
+    })
+    // El modelo recibe la confirmación de que la vista se movió.
+    const out = JSON.parse(res.content)
+    expect(out.ok).toBe(true)
+  })
+
+  it('sección fuera de la allow-list → error, sin navegación', async () => {
+    const db = fakeDb()
+    const blocks: ConciergeBlock[] = []
+    const exec = makeExecutor({ blocks })
+
+    const res = await exec('abrir_seccion', { seccion: 'https://evil.com' }, ctxWith(db))
+
+    expect(res.isError).toBe(true)
+    expect(blocks).toHaveLength(0)
   })
 })

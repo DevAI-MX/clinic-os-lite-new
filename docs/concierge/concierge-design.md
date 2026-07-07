@@ -336,9 +336,17 @@ Todos con `requireRole('agent')` + rate limits como el endpoint actual.
 **Tocar (~4):** `sidebar.tsx` (nav item) · `header.tsx` (título) · `src/lib/ai/agent/loop.ts` (o wrapper streaming en `concierge/`) · `src/lib/ai/internal/index.ts` (re-exports).
 Alcance funcional: sesiones persistidas, streaming (o plan B de status+texto), 6 read-tools, 6 write-tools con action cards y confirmación de dos fases.
 
-### Fase 2 — Voz y adjuntos
+### Fase 2 — Voz y adjuntos ✅ (construida)
 **Crear (~7):** `transcribe/route.ts`, `tts/route.ts` · `recorder-overlay.tsx`, `audio-message.tsx`, `attachment-view.tsx`, `voice-toggle.tsx` · hooks `use-recorder`, `use-tts`.
 **Tocar (~4):** `composer.tsx` (mic + adjuntos) · `chat-thread`/`message-bubble` (audio/attachments) · `chat/route.ts` (attachments al modelo vía visión) · Setup de `/agents` (campo voice key / consentimiento embeddings-key) + columna `voice_api_key` (mini-migración).
+
+**Cómo quedó realmente (desviaciones del plan):**
+- **Sin migración nueva**: adjuntos, `via_voz` y bloques viven en `assistant_messages.content_json`; el audio del dictado NO se persiste (solo la transcripción, marcada "dictado por voz") — se transcribe directo del blob sin pasar por Storage.
+- **Key de voz sin columna nueva**: `pickVoiceApiKey()` usa la key del agente si el proveedor es OpenAI, o la de embeddings si es Anthropic; sin key OpenAI → `voice_unavailable` (dictado deshabilitado, TTS cae a `speechSynthesis`).
+- **Dictado con revisión**: con "Voz" apagada la transcripción cae al composer para editar; con "Voz" encendida el mic entra en **modo conversación** (envía solo, lee la respuesta con TTS y re-escucha con VAD de silencio ~2s; Esc/✕ rompen el ciclo). El tope duro de grabación es 2 min.
+- **Adjuntos**: imágenes (jpeg/png/webp ≤5MB) + PDF (≤16MB), máx 3 por turno, al bucket `chat-media`; el server solo acepta URLs de ese bucket (anti-SSRF) y analiza hasta 2 imágenes por turno con `analyzeReceiptImage` (mismo pre-paso de visión de Sofía). Los PDF solo se anuncian por nombre.
+- **Extras que se adelantaron de §4.3**: bloque `agenda` (widget de citas del día que emite `consultar_agenda_dia`, con estados crudos para chips y link a /calendario) y tool `abrir_seccion` (navegación autónoma con allow-list: calendario/conversaciones/crm/embudo/notificaciones; emite bloque `navegacion` — en vivo el cliente hace `router.push`, hidratado solo pinta el chip).
+- El protocolo NDJSON ganó el evento `{type:'block', block}`.
 
 ### Fase 3 — Proactividad + acceso global
 **Crear (~6):** `concierge/cron/route.ts` + `src/lib/ai/concierge/proactive.ts` (reglas) · `suggestions-strip.tsx` · `concierge-sheet.tsx` (Sheet global) + trigger en header con `⌘K` · contrato de contexto por ruta (`use-route-context.ts`) · tool `enviar_whatsapp_paciente`.

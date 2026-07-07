@@ -29,6 +29,11 @@ import {
   TOOL_STATUS_LABEL,
   type ConciergeWriteToolName,
 } from './tools'
+import {
+  CONCIERGE_SECTIONS,
+  type ConciergeBlock,
+  type ConciergeSectionKey,
+} from './blocks'
 
 /** Vida de una propuesta sin resolver. Después la UI la pinta expirada
  *  y el endpoint de confirmación la rechaza. */
@@ -49,6 +54,8 @@ export interface ProposedAction {
 export interface ConciergeExecEvents {
   onStatus?: (label: string) => void
   onProposal?: (action: ProposedAction) => void
+  /** Bloques estructurados (widget de agenda, chip de navegación…). */
+  onBlock?: (block: ConciergeBlock) => void
 }
 
 function ok(payload: Record<string, unknown>): ToolExecResult {
@@ -129,6 +136,7 @@ async function contactNamesById(
 async function consultarAgendaDia(
   ctx: AgentToolContext,
   args: { fecha?: string },
+  events?: ConciergeExecEvents,
 ): Promise<ToolExecResult> {
   const raw = typeof args.fecha === 'string' ? args.fecha.trim() : ''
   const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/)
@@ -137,6 +145,8 @@ async function consultarAgendaDia(
     : wallPartsInTz(ctx.now, ctx.timezone)
   const dayStart = instantFromLocalDateTime(ctx.timezone, wall, { hour: 0, minute: 0 })
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const fecha = `${wall.year}-${pad(wall.month)}-${pad(wall.day)}`
 
   const { data: appts, error } = await ctx.db
     .from('appointments')
@@ -148,7 +158,12 @@ async function consultarAgendaDia(
   if (error) return fail(`No pude leer la agenda: ${error.message}`)
 
   if (!appts || appts.length === 0) {
-    return ok({ ok: true, citas: [], nota: 'No hay citas agendadas ese día.' })
+    events?.onBlock?.({ kind: 'agenda', fecha, citas: [] })
+    return ok({
+      ok: true,
+      citas: [],
+      nota: 'No hay citas agendadas ese día. El chat ya muestra el widget de agenda vacío; no repitas la lista en texto.',
+    })
   }
 
   const nameById = await contactNamesById(ctx, [
@@ -156,12 +171,14 @@ async function consultarAgendaDia(
   ])
 
   const citas = appts.map((a) => ({
-    appointment_id: a.id,
-    contact_id: a.contact_id,
+    appointment_id: a.id as string,
+    contact_id: a.contact_id as string,
     paciente: nameById.get(a.contact_id as string) ?? 'Sin nombre',
     hora: formatSlotLabel(new Date(a.starts_at as string), ctx.timezone),
-    tipo: a.appointment_type,
-    estado: APPT_STATUS_LABEL[a.status as string] ?? a.status,
+    tipo: (a.appointment_type as string | null) ?? null,
+    estado: a.status as string,
+    estado_label: APPT_STATUS_LABEL[a.status as string] ?? (a.status as string),
+    anticipo_estado: (a.deposit_status as string) ?? 'no_aplica',
     anticipo:
       a.deposit_status === 'pendiente'
         ? `pendiente${a.deposit_amount != null ? ` (${fmtMoney(a.deposit_amount)})` : ''}`
@@ -170,7 +187,49 @@ async function consultarAgendaDia(
           : 'no aplica',
   }))
 
-  return ok({ ok: true, total: citas.length, citas })
+  events?.onBlock?.({ kind: 'agenda', fecha, citas })
+
+  return ok({
+    ok: true,
+    total: citas.length,
+    // El modelo sigue viendo la etiqueta legible como "estado".
+    citas: citas.map((c) => ({
+      appointment_id: c.appointment_id,
+      contact_id: c.contact_id,
+      paciente: c.paciente,
+      hora: c.hora,
+      tipo: c.tipo,
+      estado: c.estado_label,
+      anticipo: c.anticipo,
+    })),
+    nota: 'El chat ya muestra estas citas como TARJETA DE AGENDA; no repitas la lista completa en texto — resume y responde lo que te preguntaron.',
+  })
+}
+
+/** Navegación autónoma: emite el bloque (el cliente navega en vivo) y
+ *  le confirma al modelo que la vista quedó abierta. No toca la BD. */
+function abrirSeccion(
+  args: { seccion?: string },
+  events?: ConciergeExecEvents,
+): ToolExecResult {
+  const key = typeof args.seccion === 'string' ? args.seccion.trim() : ''
+  const section = CONCIERGE_SECTIONS[key as ConciergeSectionKey]
+  if (!section) {
+    return fail(
+      `Sección desconocida: "${key}". Usa una de: ${Object.keys(CONCIERGE_SECTIONS).join(', ')}.`,
+    )
+  }
+  events?.onBlock?.({
+    kind: 'navegacion',
+    seccion: key,
+    href: section.href,
+    label: section.label,
+  })
+  return ok({
+    ok: true,
+    seccion: key,
+    nota: `La sección "${section.label}" quedó abierta en la pantalla del usuario (salió del chat). Cierra tu respuesta breve — la puede escuchar por voz o leer al volver.`,
+  })
 }
 
 async function consultarAnticiposPendientes(
@@ -557,13 +616,15 @@ export function createConciergeExecutor(
     try {
       switch (name) {
         case 'consultar_agenda_dia':
-          return await consultarAgendaDia(ctx, args as never)
+          return await consultarAgendaDia(ctx, args as never, opts.events)
         case 'consultar_anticipos_pendientes':
           return await consultarAnticiposPendientes(ctx)
         case 'consultar_embudo':
           return await consultarEmbudo(ctx)
         case 'buscar_paciente':
           return await buscarPaciente(ctx, args as never)
+        case 'abrir_seccion':
+          return abrirSeccion(args as never, opts.events)
         // Estas dos operan solo a escala de cuenta en el ejecutor
         // clínico (no tocan contact_id) — se delegan tal cual.
         case 'consultar_disponibilidad':

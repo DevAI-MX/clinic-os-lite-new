@@ -20,6 +20,7 @@
 
 import type { ToolDefinition } from '../agent'
 import { APPOINTMENT_TYPES, RECORD_CATEGORIES } from '../agent/tools'
+import { CONCIERGE_SECTION_KEYS } from './blocks'
 
 /** Estados que el equipo puede fijar en una cita desde el Concierge.
  *  ('pendiente' no está: esa la deja el agente de WhatsApp; el humano
@@ -111,6 +112,22 @@ export const CONCIERGE_READ_TOOLS: readonly ToolDefinition[] = [
           description: 'Filtro opcional por categoría. Omítela para ver todo.',
         },
       },
+    },
+  },
+  {
+    name: 'abrir_seccion',
+    description:
+      'Abre una sección del panel en la pantalla del usuario (navega la vista, no devuelve datos). Úsala cuando el usuario pida VER una pantalla ("ábreme el calendario", "llévame al embudo") o cuando, hablando por voz, convenga mostrar la sección mientras respondes. Para RESPONDER datos usa las herramientas consultar_*; esta solo mueve la vista y saca al usuario del chat.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        seccion: {
+          type: 'string',
+          enum: [...CONCIERGE_SECTION_KEYS],
+          description: 'Sección del panel a abrir.',
+        },
+      },
+      required: ['seccion'],
     },
   },
 ]
@@ -277,6 +294,7 @@ export const TOOL_STATUS_LABEL: Record<string, string> = {
   buscar_paciente: 'Buscando paciente…',
   consultar_disponibilidad: 'Buscando huecos libres…',
   consultar_catalogo: 'Consultando catálogo…',
+  abrir_seccion: 'Abriendo sección…',
   agendar_cita: 'Preparando propuesta de cita…',
   reagendar_cita: 'Preparando reagendado…',
   actualizar_estado_cita: 'Preparando cambio de estado…',
