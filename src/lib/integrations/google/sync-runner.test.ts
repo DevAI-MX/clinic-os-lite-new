@@ -34,6 +34,7 @@ function makeFake(opts: FakeOpts) {
     linkUpserts: [] as Record<string, unknown>[],
     linkDeletes: 0,
     jobUpdates: [] as Record<string, unknown>[],
+    eqCalls: [] as [string, string, unknown][],
   }
   function single(table: string) {
     if (table === 'appointments') return opts.appointment ?? null
@@ -61,7 +62,10 @@ function makeFake(opts: FakeOpts) {
         state.op = 'delete'
         return b
       },
-      eq: () => b,
+      eq: (col: string, val: unknown) => {
+        calls.eqCalls.push([table, col, val])
+        return b
+      },
       in: (_col: string, ids: string[]) => {
         if (state.op === 'update') calls.superseded.push(...ids)
         return b
@@ -141,6 +145,33 @@ describe('runDueCalendarSyncJobs', () => {
     const res = await runDueCalendarSyncJobs(db, { nowMs: T0 })
     expect(res.skipped).toBe(1)
     expect(insertEvent).not.toHaveBeenCalled()
+  })
+
+  it('con accountId, acota la cola de jobs a esa cuenta', async () => {
+    vi.mocked(insertEvent).mockResolvedValue({ id: 'ev-1', etag: 'et-1' })
+    const { db, calls } = makeFake({ jobs: [job()], appointment: appt(), link: null })
+    const res = await runDueCalendarSyncJobs(db, { nowMs: T0, accountId: 'acc-1' })
+
+    expect(res.processed).toBe(1)
+    // El filtro por cuenta se aplica a la SELECT de la cola.
+    expect(
+      calls.eqCalls.some(
+        ([t, c, v]) =>
+          t === 'calendar_sync_jobs' && c === 'account_id' && v === 'acc-1',
+      ),
+    ).toBe(true)
+  })
+
+  it('sin accountId, NO filtra la cola por cuenta (cron completo)', async () => {
+    vi.mocked(insertEvent).mockResolvedValue({ id: 'ev-1', etag: 'et-1' })
+    const { db, calls } = makeFake({ jobs: [job()], appointment: appt(), link: null })
+    await runDueCalendarSyncJobs(db, { nowMs: T0 })
+
+    expect(
+      calls.eqCalls.some(
+        ([t, c]) => t === 'calendar_sync_jobs' && c === 'account_id',
+      ),
+    ).toBe(false)
   })
 
   it('upsert sin link: crea el evento y guarda el link', async () => {

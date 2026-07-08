@@ -12,6 +12,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { nudgeCalendarSync } from "@/lib/integrations/google/nudge-client";
 import { toast } from "sonner";
 import {
   Sheet,
@@ -98,6 +99,8 @@ export function AppointmentSheet({
     } else {
       toast.success(message);
       onChanged();
+      // Propaga el nuevo estado (o el borrado, si se canceló) a Google.
+      nudgeCalendarSync();
     }
     setPending(null);
   }
@@ -116,6 +119,8 @@ export function AppointmentSheet({
     } else {
       toast.success(doctorId ? "Doctor asignado" : "Doctor quitado");
       onChanged();
+      // El color del evento en Google depende del doctor: resincroniza.
+      nudgeCalendarSync();
     }
     setPending(null);
   }
@@ -192,6 +197,8 @@ export function AppointmentSheet({
 
       toast.success("Anticipo confirmado — cita confirmada");
       onChanged();
+      // La cita pasó a 'confirmada' (tentative → confirmed en Google).
+      nudgeCalendarSync();
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "No se pudo confirmar el anticipo";

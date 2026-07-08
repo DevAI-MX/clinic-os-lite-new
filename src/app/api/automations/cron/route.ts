@@ -1,7 +1,8 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, after } from 'next/server'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { resumePendingExecution } from '@/lib/automations/engine'
 import type { AutomationContext } from '@/lib/automations/engine'
+import { runDueCalendarSyncJobs } from '@/lib/integrations/google/sync-runner'
 
 /**
  * Drain due `automation_pending_executions` rows. Meant to be hit
@@ -25,6 +26,18 @@ export async function GET(request: Request) {
   }
 
   const admin = supabaseAdmin()
+
+  // Ride-along del calendario: en este mismo barrido drenamos también la
+  // cola de sincronización de Google Calendar. La sync de calendario NO
+  // tiene su propio pinger en producción; engancharla al cron de
+  // automatizaciones —que YA se pinguea— le da la misma cadencia y
+  // fiabilidad sin montar infraestructura nueva. Corre en `after()` (tras
+  // responder) para no añadir latencia ni acoplar fallos al drenado de
+  // automatizaciones: `runDueCalendarSyncJobs` nunca lanza y usa su propio
+  // claim-lock, así que solaparse con el pinger dedicado o con el "nudge"
+  // del panel es seguro (nadie procesa dos veces el mismo job).
+  after(() => runDueCalendarSyncJobs(admin).catch(() => {}))
+
   const { data: due, error } = await admin
     .from('automation_pending_executions')
     .select('*')

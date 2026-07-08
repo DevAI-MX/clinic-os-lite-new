@@ -54,19 +54,25 @@ export interface RunResult {
  */
 export async function runDueCalendarSyncJobs(
   db: SupabaseClient,
-  opts: { nowMs?: number; limit?: number } = {},
+  opts: { nowMs?: number; limit?: number; accountId?: string } = {},
 ): Promise<RunResult> {
   const nowMs = opts.nowMs ?? Date.now()
   const limit = opts.limit ?? 50
   const nowIso = new Date(nowMs).toISOString()
 
-  const { data: jobs, error } = await db
+  // `accountId` acota el drenado a una sola cuenta: lo usa el "nudge" con
+  // sesión que el panel dispara tras crear/editar una cita, para reflejar
+  // ese cambio en Google al instante sin tocar las demás cuentas. Sin él
+  // (el cron periódico) se drena la cola completa.
+  let query = db
     .from('calendar_sync_jobs')
     .select(
       'id, account_id, appointment_id, operation, google_event_id, google_calendar_id, attempts',
     )
     .eq('status', 'pending')
     .lte('run_at', nowIso)
+  if (opts.accountId) query = query.eq('account_id', opts.accountId)
+  const { data: jobs, error } = await query
     .order('run_at', { ascending: true })
     .limit(limit)
 

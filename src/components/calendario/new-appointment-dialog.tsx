@@ -12,6 +12,7 @@
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
+import { nudgeCalendarSync } from "@/lib/integrations/google/nudge-client";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -170,6 +171,10 @@ export function NewAppointmentDialog({
         created_by: user.id,
       });
       if (error) throw error;
+
+      // Refleja la cita nueva en Google Calendar casi al instante; si
+      // falla, el cron de respaldo la sincroniza en el siguiente barrido.
+      nudgeCalendarSync();
 
       toast.success(
         requiresDeposit
