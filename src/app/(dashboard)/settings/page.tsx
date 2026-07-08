@@ -11,6 +11,7 @@ import { ProfileForm } from '@/components/settings/profile-form';
 import { SecurityPanel } from '@/components/settings/security-panel';
 import { AppearancePanel } from '@/components/settings/appearance-panel';
 import { WhatsAppConfig } from '@/components/settings/whatsapp-config';
+import { ZernioConnection } from '@/components/settings/zernio-connection';
 import { GoogleIntegration } from '@/components/settings/google-integration';
 import { TemplateManager } from '@/components/settings/template-manager';
 import { FieldsAndTagsPanel } from '@/components/settings/fields-and-tags-panel';
@@ -56,7 +57,29 @@ export default function SettingsPage() {
     profile: <ProfileForm />,
     security: <SecurityPanel />,
     appearance: <AppearancePanel />,
-    whatsapp: <WhatsAppConfig />,
+    whatsapp: (
+      <div className="space-y-8">
+        {/* Zernio es la vía real de WhatsApp hoy → validación en vivo arriba. */}
+        <ZernioConnection />
+        {/* La conexión directa con Meta queda como configuración avanzada
+            (aún es un camino de respaldo del envío), plegada para no
+            confundir con la conexión principal por Zernio. */}
+        <details className="group max-w-2xl overflow-hidden rounded-lg border border-border">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/40">
+            <span>Configuración avanzada · conexión directa con Meta</span>
+            <span className="text-xs text-muted-foreground/70 group-open:hidden">
+              Mostrar
+            </span>
+            <span className="hidden text-xs text-muted-foreground/70 group-open:inline">
+              Ocultar
+            </span>
+          </summary>
+          <div className="border-t border-border p-4">
+            <WhatsAppConfig />
+          </div>
+        </details>
+      </div>
+    ),
     integrations: <GoogleIntegration />,
     templates: <TemplateManager />,
     fields: <FieldsAndTagsPanel />,

@@ -53,7 +53,6 @@ export function SettingsOverview({
     let cancelled = false;
     const supabase = createClient();
     const userId = user.id;
-    const acctId = accountId;
 
     // Cheap counts — resolve fast, render immediately.
     (async () => {
@@ -113,23 +112,26 @@ export function SettingsOverview({
       setCountsLoading(false);
     })();
 
-    // WhatsApp connection status — slower, independent.
+    // WhatsApp connection status — hoy la vía real es Zernio (env), no
+    // los tokens de Meta. /api/zernio/status hace una validación EN VIVO
+    // contra Zernio; es la misma fuente de verdad que la tarjeta de la
+    // sección WhatsApp, así que el landing y la sección no se contradicen.
     (async () => {
       setWhatsappLoading(true);
-      const [row, health] = await Promise.allSettled([
-        supabase
-          .from('whatsapp_config')
-          .select('phone_number_id')
-          .eq('account_id', acctId)
-          .maybeSingle(),
-        fetch('/api/whatsapp/config', { cache: 'no-store' }).then((r) => r.json()),
-      ]);
-      if (cancelled) return;
-      setWhatsapp({
-        configured: row.status === 'fulfilled' && !!row.value.data?.phone_number_id,
-        connected: health.status === 'fulfilled' && !!health.value?.connected,
-      });
-      setWhatsappLoading(false);
+      try {
+        const res = await fetch('/api/zernio/status', { cache: 'no-store' });
+        const data = (await res.json()) as { state?: string };
+        if (cancelled) return;
+        setWhatsapp({
+          configured: data.state !== 'not_configured',
+          connected: data.state === 'valid',
+        });
+      } catch {
+        if (cancelled) return;
+        setWhatsapp({ configured: false, connected: false });
+      } finally {
+        if (!cancelled) setWhatsappLoading(false);
+      }
     })();
 
     return () => {

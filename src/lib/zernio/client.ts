@@ -111,6 +111,116 @@ async function zernioPost(body: Record<string, unknown>): Promise<ZernioSendResu
 }
 
 // ============================================================
+// Connection status (read-only health check)
+//
+// Settings needs to answer "is WhatsApp actually connected through
+// Zernio, and is the API key valid?" — not just "are the env vars
+// set?". GET {base}/v1/accounts authenticates with the API key and
+// returns the connected social accounts; we look for the configured
+// ZERNIO_ACCOUNT_ID in that list. A 401 means the key is bad; an
+// empty/mismatched list means the account id is wrong. This is a
+// live probe, so it's the real proof the number can send/receive.
+// ============================================================
+
+/** Datos de la cuenta de WhatsApp conectada en Zernio (los que mostramos). */
+export interface ZernioAccountInfo {
+  accountId: string
+  /** Número en formato +E.164, tal como lo reporta Meta vía Zernio. */
+  phoneNumber: string | null
+  /** Nombre verificado del perfil de WhatsApp Business. */
+  verifiedName: string | null
+  /** Nombre visible de la cuenta en Zernio. */
+  displayName: string | null
+  platform: string | null
+  /** Calificación de calidad de Meta: GREEN / YELLOW / RED. */
+  qualityRating: string | null
+  /** Tope de mensajería de Meta, p.ej. TIER_250, TIER_1K. */
+  messagingTier: string | null
+  enabled: boolean
+  isActive: boolean
+  /** Fecha en que se conectó el número. */
+  connectedAt: string | null
+  /** Fecha de una desconexión intencional (null = sigue conectado). */
+  disconnectedAt: string | null
+}
+
+/**
+ * Estado de la conexión de WhatsApp por Zernio. Discriminado por
+ * `state` para que la UI pinte cada caso sin adivinar.
+ */
+export type ZernioConnectionStatus =
+  | { state: 'valid'; account: ZernioAccountInfo }
+  | { state: 'dry_run' }
+  | { state: 'not_configured' }
+  | { state: 'unauthorized' }
+  | { state: 'account_not_found'; accountId: string }
+  | { state: 'error'; message: string }
+
+/** Extrae de forma defensiva la cuenta que coincide con el accountId. */
+function parseZernioAccount(payload: unknown, accountId: string): ZernioAccountInfo | null {
+  if (!payload || typeof payload !== 'object') return null
+  const list = (payload as { accounts?: unknown }).accounts
+  if (!Array.isArray(list)) return null
+  const raw = list.find(
+    (a) => a && typeof a === 'object' && (a as Record<string, unknown>)._id === accountId,
+  ) as Record<string, unknown> | undefined
+  if (!raw) return null
+  const meta = (raw.metadata && typeof raw.metadata === 'object' ? raw.metadata : {}) as Record<string, unknown>
+  const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null)
+  return {
+    accountId,
+    phoneNumber: str(meta.displayPhoneNumber),
+    verifiedName: str(meta.verifiedName),
+    displayName: str(raw.displayName),
+    platform: str(raw.platform),
+    qualityRating: str(meta.qualityRating),
+    messagingTier: str(meta.messagingLimitTier),
+    enabled: raw.enabled !== false,
+    isActive: raw.isActive !== false,
+    connectedAt: str(meta.connectedAt),
+    disconnectedAt: str(raw.intentionalDisconnectAt),
+  }
+}
+
+/**
+ * Comprueba EN VIVO que el WhatsApp de la clínica está conectado por
+ * Zernio y que la API key es válida. No lanza: siempre devuelve un
+ * estado que la UI de Ajustes puede mostrar.
+ */
+export async function getZernioConnectionStatus(): Promise<ZernioConnectionStatus> {
+  const cfg = getZernioConfig()
+
+  // Sin credenciales reales: distinguir modo prueba de sin configurar.
+  if (!cfg.apiKey || !cfg.accountId) {
+    return { state: cfg.dryRun ? 'dry_run' : 'not_configured' }
+  }
+
+  let response: Response
+  try {
+    response = await fetch(`${cfg.baseUrl}/v1/accounts`, {
+      headers: { Authorization: `Bearer ${cfg.apiKey}`, Accept: 'application/json' },
+      cache: 'no-store',
+    })
+  } catch (err) {
+    return { state: 'error', message: err instanceof Error ? err.message : 'No se pudo contactar a Zernio.' }
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    return { state: 'unauthorized' }
+  }
+  if (!response.ok) {
+    return { state: 'error', message: `Zernio respondió ${response.status}.` }
+  }
+
+  const data = await response.json().catch(() => null)
+  const account = parseZernioAccount(data, cfg.accountId)
+  if (!account) {
+    return { state: 'account_not_found', accountId: cfg.accountId }
+  }
+  return { state: 'valid', account }
+}
+
+// ============================================================
 // Send helpers
 // ============================================================
 
