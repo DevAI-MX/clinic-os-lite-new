@@ -1,8 +1,10 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, after } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
+import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { clinicTimezone } from '@/lib/ai/agent'
 import { confirmProposedAction } from '@/lib/ai/concierge'
+import { runDueCalendarSyncJobs } from '@/lib/integrations/google/sync-runner'
 
 type Params = { params: Promise<{ id: string }> }
 
@@ -15,6 +17,12 @@ type Params = { params: Promise<{ id: string }> }
  * mutación con el cliente RLS del usuario que confirmó. Persiste
  * executed|failed con el resultado/error. La lógica vive en
  * confirmProposedAction (compartida con confirm-batch).
+ *
+ * Si la acción reagenda/cancela/agenda una cita, el trigger de BD
+ * encola el job de Google Calendar; lo drenamos aquí en `after()` para
+ * que el evento se mueva/borre en Google en segundos (mismo patrón que
+ * el nudge del panel y confirm-deposit). Sin esto, el cambio solo
+ * viajaría cuando corriera el cron de automatizaciones.
  */
 export async function POST(_request: Request, { params }: Params) {
   try {
@@ -32,6 +40,12 @@ export async function POST(_request: Request, { params }: Params) {
       now: new Date(),
       actionId: id,
     })
+
+    if (outcome.status === 'executed') {
+      after(() =>
+        runDueCalendarSyncJobs(supabaseAdmin(), { accountId }).catch(() => {}),
+      )
+    }
 
     switch (outcome.status) {
       case 'executed':

@@ -1,8 +1,10 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, after } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
+import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { clinicTimezone } from '@/lib/ai/agent'
 import { confirmActionsBatch } from '@/lib/ai/concierge'
+import { runDueCalendarSyncJobs } from '@/lib/integrations/google/sync-runner'
 
 // Tope de pasos por plan (un turno del Concierge no propone más que
 // esto; también corta payloads maliciosos).
@@ -64,6 +66,16 @@ export async function POST(request: Request) {
       sessionId,
       messageId,
     })
+
+    // Si algún paso mutó una cita (reagendar/cancelar/agendar), el trigger
+    // de BD ya encoló su job de Google Calendar; lo drenamos en `after()`
+    // para reflejar el movimiento/borrado del evento en segundos (mismo
+    // patrón que el nudge del panel y confirm-deposit).
+    if (results.some((r) => r.status === 'executed')) {
+      after(() =>
+        runDueCalendarSyncJobs(supabaseAdmin(), { accountId }).catch(() => {}),
+      )
+    }
 
     return NextResponse.json({
       results,
