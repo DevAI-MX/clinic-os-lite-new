@@ -13,11 +13,21 @@ export {
 export type { ConciergeWriteToolName } from './tools'
 export {
   createConciergeExecutor,
+  buildPlanBlock,
   ACTION_EXPIRY_MINUTES,
 } from './execute'
 export type { ProposedAction, ConciergeExecEvents } from './execute'
-export { executeConfirmedAction } from './actions'
-export type { ExecuteConfirmedActionArgs } from './actions'
+export {
+  executeConfirmedAction,
+  confirmProposedAction,
+  confirmActionsBatch,
+} from './actions'
+export type {
+  ExecuteConfirmedActionArgs,
+  ConfirmActionOutcome,
+  ConfirmProposedActionArgs,
+  ConfirmActionsBatchArgs,
+} from './actions'
 export { buildConciergeSystemPrompt } from './prompt'
 export { CONCIERGE_SECTIONS, CONCIERGE_SECTION_KEYS } from './blocks'
 export type {
@@ -25,6 +35,9 @@ export type {
   AgendaBlock,
   AgendaBlockCita,
   NavigateBlock,
+  PlanBlock,
+  PlanBlockStep,
+  PlanStepStatus,
   ConciergeSectionKey,
 } from './blocks'
 export {

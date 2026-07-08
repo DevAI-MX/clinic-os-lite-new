@@ -7,6 +7,7 @@ import {
   CONCIERGE_TOOLS,
   createConciergeExecutor,
   buildConciergeSystemPrompt,
+  buildPlanBlock,
   parseAttachments,
   buildAttachmentNotes,
   type ProposedAction,
@@ -227,6 +228,17 @@ export async function POST(request: Request) {
               embeddingsApiKey: config.embeddingsApiKey,
             },
           })
+
+          // Varias propuestas en un mismo turno = un PLAN: el bloque
+          // las agrupa para confirmarlas en orden con un clic (la
+          // ejecución sigue siendo acción por acción vía confirm-batch;
+          // el gate humano no se debilita). Se emite antes del texto y
+          // se persiste con los demás bloques.
+          const planBlock = buildPlanBlock(proposals)
+          if (planBlock) {
+            blocks.push(planBlock)
+            emit({ type: 'block', block: planBlock })
+          }
 
           // --- Persistir el turno del asistente + ligar propuestas.
           const contentJson =

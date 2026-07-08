@@ -432,6 +432,7 @@ export function ConciergePage() {
           onSuggestion={(s) => void handleSend(s)}
           onConfirmAction={chat.confirmAction}
           onCancelAction={chat.cancelAction}
+          onConfirmBatch={(ids, plan) => void chat.confirmBatch(ids, plan)}
           onPlayToggle={handlePlayToggle}
         />
 

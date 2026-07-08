@@ -17,9 +17,11 @@ import { aiRequestTimeoutMs } from '../defaults'
 import { parseGeneration } from '../generate'
 import {
   CLINICAL_TOOLS,
+  sanitizeToolInput,
   type RunClinicalAgentArgs,
   type RunClinicalAgentResult,
   type ToolDefinition,
+  type ToolTrace,
 } from './tools'
 import { executeClinicalTool } from './execute'
 
@@ -113,12 +115,13 @@ export async function runOpenAiAgent(
     })),
   ]
   let escalated = false
+  const traces: ToolTrace[] = []
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const data = await callOpenAi(args, messages, timeoutMs)
     const choice = data.choices?.[0]
     const msg = choice?.message
-    if (!msg) return { text: '', handoff: true, escalated }
+    if (!msg) return { text: '', handoff: true, escalated, traces }
 
     // Reenvía el turno del asistente tal cual (incluye tool_calls).
     messages.push({
@@ -138,17 +141,20 @@ export async function runOpenAiAgent(
     )
     if (choice.finish_reason !== 'tool_calls' || toolCalls.length === 0) {
       const { text, handoff } = parseGeneration(msg.content?.trim() ?? '')
-      return { text, handoff, escalated }
+      return { text, handoff, escalated, traces }
     }
 
     const executeTool = args.executeTool ?? executeClinicalTool
     for (const tc of toolCalls) {
-      const r = await executeTool(
-        tc.function.name,
-        parseArgs(tc.function.arguments),
-        args.ctx,
-      )
+      const input = parseArgs(tc.function.arguments)
+      const r = await executeTool(tc.function.name, input, args.ctx)
       if (r.escalated) escalated = true
+      traces.push({
+        name: tc.function.name,
+        input: sanitizeToolInput(input),
+        content: r.content,
+        isError: r.isError ?? false,
+      })
       messages.push({
         role: 'tool',
         tool_call_id: tc.id,
@@ -165,5 +171,5 @@ export async function runOpenAiAgent(
   const lastText = [...messages]
     .reverse()
     .find((m) => m.role === 'assistant' && typeof m.content === 'string' && m.content.trim())
-  return { text: (lastText?.content as string)?.trim() ?? '', handoff: false, escalated }
+  return { text: (lastText?.content as string)?.trim() ?? '', handoff: false, escalated, traces }
 }

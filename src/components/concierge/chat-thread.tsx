@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { ActionCard } from './action-card';
 import { BlockView } from './block-view';
 import { AttachmentView } from './attachment-view';
-import type { ConciergeAction, ConciergeMessage } from './use-concierge-chat';
+import type { ConciergeAction, ConciergeMessage, PlanRef } from './use-concierge-chat';
 
 // ============================================================
 // Transcript del Concierge. Usuario en burbuja (mismo lenguaje que el
@@ -27,6 +27,10 @@ interface ChatThreadProps {
   onSuggestion: (text: string) => void;
   onConfirmAction: (id: string) => void;
   onCancelAction: (id: string) => void;
+  /** "Confirmar plan" del PlanBlock: confirma las propuestas en orden.
+   *  `plan` identifica el lote (sesión + mensaje) para que el server
+   *  valide que cada acción pertenece a ese plan. */
+  onConfirmBatch: (actionIds: string[], plan: PlanRef) => void;
   onPlayToggle: (id: string, text: string) => void;
 }
 
@@ -48,6 +52,7 @@ export function ChatThread({
   onSuggestion,
   onConfirmAction,
   onCancelAction,
+  onConfirmBatch,
   onPlayToggle,
 }: ChatThreadProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -140,7 +145,25 @@ export function ChatThread({
               </div>
               <div className="group flex min-w-0 flex-1 flex-col gap-3">
                 {m.blocks.map((block, i) => (
-                  <BlockView key={`${m.id}-b${i}`} block={block} />
+                  <BlockView
+                    key={`${m.id}-b${i}`}
+                    block={block}
+                    actions={actions}
+                    // El plan solo se puede confirmar cuando el mensaje ya
+                    // está persistido (dbId real): confirm-batch valida el
+                    // lote contra esa sesión + mensaje. Sin ids el botón
+                    // queda deshabilitado (las tarjetas individuales siguen
+                    // funcionando).
+                    onConfirmPlan={
+                      m.dbId && m.sessionId
+                        ? (ids) =>
+                            onConfirmBatch(ids, {
+                              sessionId: m.sessionId!,
+                              messageId: m.dbId!,
+                            })
+                        : undefined
+                    }
+                  />
                 ))}
                 {m.content && (
                   <div>

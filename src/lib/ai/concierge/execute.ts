@@ -34,6 +34,7 @@ import {
   type AgendaBlockCita,
   type ConciergeBlock,
   type ConciergeSectionKey,
+  type PlanBlock,
 } from './blocks'
 
 /** Vida de una propuesta sin resolver. Después la UI la pinta expirada
@@ -960,6 +961,30 @@ async function draftProposal(
         args: { contact_id: contactId, categoria, dato },
       }
     }
+  }
+}
+
+/**
+ * Agrupa las propuestas de UN turno como plan multi-paso. Con 0 o 1
+ * propuestas no hay plan (la tarjeta individual basta); con 2+ el chat
+ * pinta el PlanBlock con su botón "Confirmar plan" — la ejecución
+ * sigue siendo acción por acción (confirm-batch reusa
+ * executeConfirmedAction), así que la regla propose → confirm no se
+ * debilita: el clic del humano sigue siendo el gate.
+ */
+export function buildPlanBlock(
+  proposals: readonly ProposedAction[],
+): PlanBlock | null {
+  if (proposals.length < 2) return null
+  return {
+    kind: 'plan',
+    title: `Plan propuesto — ${proposals.length} pasos`,
+    steps: proposals.map((p) => ({
+      action_id: p.id,
+      tool_name: p.toolName,
+      summary: p.summary,
+      status: 'proposed',
+    })),
   }
 }
 

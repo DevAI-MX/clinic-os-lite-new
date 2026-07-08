@@ -47,7 +47,36 @@ export interface NavigateBlock {
   label: string
 }
 
-export type ConciergeBlock = AgendaBlock | NavigateBlock
+/** Estados posibles de un paso del plan (los de assistant_actions). */
+export type PlanStepStatus =
+  | 'proposed'
+  | 'executing'
+  | 'executed'
+  | 'failed'
+  | 'cancelled'
+  | 'expired'
+
+/** Un paso del plan: referencia a una assistant_action propuesta. El
+ *  status persistido es el del momento de proponer; la UI lo une por
+ *  action_id con el estado VIVO de la acción. */
+export interface PlanBlockStep {
+  action_id: string
+  tool_name: string
+  summary: string
+  status: PlanStepStatus
+}
+
+/** Plan multi-paso — lo emite el chat cuando un turno deja MÁS de una
+ *  propuesta de acción: agrupa las assistant_actions del turno para
+ *  confirmarlas en orden con un solo clic (cada paso sigue siendo
+ *  confirmable/cancelable por separado en su tarjeta). */
+export interface PlanBlock {
+  kind: 'plan'
+  title: string
+  steps: PlanBlockStep[]
+}
+
+export type ConciergeBlock = AgendaBlock | NavigateBlock | PlanBlock
 
 /** Secciones del panel que el Concierge puede abrir con abrir_seccion.
  *  Allow-list cerrada: el modelo elige una clave, nunca un href libre. */

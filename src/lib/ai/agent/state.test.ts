@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildPatientStateLines } from './state'
+import { buildPatientStateLines, buildReceptionFlowLines } from './state'
 
 // Fake mínimo: soporta el subconjunto que usa buildPatientStateLines
 // (select/eq/in/gt/eq/order/limit/maybeSingle).
@@ -124,6 +124,127 @@ describe('buildPatientStateLines', () => {
   it('un error de BD degrada a [] (el agente corre igual, sin snapshot)', async () => {
     const broken = { from: () => { throw new Error('boom') } }
     const lines = await buildPatientStateLines({ db: broken as never, ...BASE })
+    expect(lines).toEqual([])
+  })
+})
+
+// ------------------------------------------------------------
+// Checklist del flujo de recepción (formulario multi-step de Sofía):
+// 5 pasos con estado REAL de BD. Solo marca hecho lo que la BD
+// confirma; lo conversacional queda como instrucción, nunca como hecho.
+// ------------------------------------------------------------
+
+const APPT_PENDIENTE = {
+  account_id: 'acc-1',
+  contact_id: 'contact-1',
+  status: 'pendiente',
+  deposit_status: 'pendiente',
+  deposit_amount: '350',
+  procedure_id: 'proc-1',
+  appointment_type: 'valoracion',
+  starts_at: '2026-07-08T22:30:00Z',
+  ends_at: '2026-07-08T23:30:00Z',
+}
+
+const PROCEDURES = [{ account_id: 'acc-1', id: 'proc-1', name: 'Valoración con el Dr.' }]
+
+describe('buildReceptionFlowLines', () => {
+  it('paciente sin cita: nada figura como hecho y el siguiente paso es cerrar horario', async () => {
+    const db = fakeDb({ appointments: [], payments: [], procedures: [] })
+    const lines = await buildReceptionFlowLines({
+      db: db as never,
+      ...BASE,
+      contactName: 'Laura Medina',
+    })
+    expect(lines).toHaveLength(5)
+    expect(lines[0]).toContain('sin confirmar en el sistema')
+    expect(lines[1]).toContain('NO hay ninguna cita apartada')
+    expect(lines[1]).toContain('agendar_cita')
+    expect(lines[2]).toContain('Laura Medina')
+    expect(lines[3]).toContain('DESPUÉS de apartar la cita')
+    expect(lines[4]).toContain('elegir horario')
+  })
+
+  it('sin cita y sin nombre: el siguiente paso incluye capturar el nombre', async () => {
+    const db = fakeDb({ appointments: [], payments: [], procedures: [] })
+    const lines = await buildReceptionFlowLines({
+      db: db as never,
+      ...BASE,
+      contactName: null,
+    })
+    expect(lines[2]).toContain('sin nombre registrado')
+    expect(lines[4]).toContain('captura su nombre')
+  })
+
+  it('cita pendiente con anticipo pendiente: pasos 1-2 hechos, siguiente = comprobante', async () => {
+    const db = fakeDb({
+      appointments: [APPT_PENDIENTE],
+      payments: [],
+      procedures: PROCEDURES,
+    })
+    const lines = await buildReceptionFlowLines({
+      db: db as never,
+      ...BASE,
+      contactName: 'Laura Medina',
+    })
+    expect(lines[0]).toContain('Valoración con el Dr.')
+    expect(lines[1]).toContain('apartada en el sistema')
+    expect(lines[1]).toContain('pendiente de que el equipo la confirme')
+    expect(lines[3]).toContain('PENDIENTE')
+    expect(lines[3]).toContain('350')
+    expect(lines[4]).toContain('prevalidar_anticipo')
+  })
+
+  it('pago pendiente en revisión: no volver a cobrar, siguiente = esperar al equipo', async () => {
+    const db = fakeDb({
+      appointments: [APPT_PENDIENTE],
+      payments: [
+        {
+          account_id: 'acc-1',
+          contact_id: 'contact-1',
+          status: 'pendiente',
+          amount: '350',
+          currency: 'MXN',
+          created_at: '2026-07-08T15:00:00Z',
+        },
+      ],
+      procedures: PROCEDURES,
+    })
+    const lines = await buildReceptionFlowLines({
+      db: db as never,
+      ...BASE,
+      contactName: 'Laura Medina',
+    })
+    expect(lines[3]).toContain('EN REVISIÓN')
+    expect(lines[3]).toContain('No le vuelvas a pedir el pago')
+    expect(lines[4]).toContain('esperar la validación del equipo')
+  })
+
+  it('cita confirmada con anticipo pagado: flujo completo, nada pendiente', async () => {
+    const db = fakeDb({
+      appointments: [
+        { ...APPT_PENDIENTE, status: 'confirmada', deposit_status: 'pagado' },
+      ],
+      payments: [],
+      procedures: PROCEDURES,
+    })
+    const lines = await buildReceptionFlowLines({
+      db: db as never,
+      ...BASE,
+      contactName: 'Laura Medina',
+    })
+    expect(lines[1]).toContain('confirmada')
+    expect(lines[3]).toContain('pagado')
+    expect(lines[4]).toContain('nada pendiente')
+  })
+
+  it('un error de BD degrada a [] (best-effort)', async () => {
+    const broken = { from: () => { throw new Error('boom') } }
+    const lines = await buildReceptionFlowLines({
+      db: broken as never,
+      ...BASE,
+      contactName: null,
+    })
     expect(lines).toEqual([])
   })
 })

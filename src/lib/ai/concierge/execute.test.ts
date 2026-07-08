@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createConciergeExecutor, type ProposedAction } from './execute'
+import { buildPlanBlock, createConciergeExecutor, type ProposedAction } from './execute'
 import type { ConciergeBlock } from './blocks'
 import type { AgentToolContext } from '../agent'
 
@@ -677,5 +677,41 @@ describe('abrir_seccion (navegación autónoma)', () => {
 
     expect(res.isError).toBe(true)
     expect(blocks).toHaveLength(0)
+  })
+})
+
+// ------------------------------------------------------------
+// buildPlanBlock — varias propuestas en un turno se agrupan como plan.
+// ------------------------------------------------------------
+
+function proposal(id: string, summary: string): ProposedAction {
+  return {
+    id,
+    toolName: 'reagendar_cita',
+    summary,
+    details: {},
+    status: 'proposed',
+    expiresAt: '2026-07-08T17:00:00Z',
+  }
+}
+
+describe('buildPlanBlock', () => {
+  it('múltiples propuestas producen un PlanBlock con un paso por acción', () => {
+    const plan = buildPlanBlock([
+      proposal('act-1', 'Reagendar a Laura → jue 10:00'),
+      proposal('act-2', 'Reagendar a Marco → jue 11:00'),
+      proposal('act-3', 'Nota en expediente de Laura'),
+    ])
+    expect(plan).not.toBeNull()
+    expect(plan!.kind).toBe('plan')
+    expect(plan!.steps).toHaveLength(3)
+    expect(plan!.steps.map((s) => s.action_id)).toEqual(['act-1', 'act-2', 'act-3'])
+    expect(plan!.steps.every((s) => s.status === 'proposed')).toBe(true)
+    expect(plan!.title).toContain('3 pasos')
+  })
+
+  it('con 0 o 1 propuestas no hay plan (la tarjeta individual basta)', () => {
+    expect(buildPlanBlock([])).toBeNull()
+    expect(buildPlanBlock([proposal('act-1', 'Reagendar a Laura')])).toBeNull()
   })
 })

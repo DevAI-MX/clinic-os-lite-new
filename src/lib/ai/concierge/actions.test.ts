@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vitest'
-import { executeConfirmedAction, type ExecuteConfirmedActionArgs } from './actions'
+import { describe, it, expect, vi } from 'vitest'
+import {
+  confirmActionsBatch,
+  confirmProposedAction,
+  executeConfirmedAction,
+  type ExecuteConfirmedActionArgs,
+} from './actions'
 
 // ------------------------------------------------------------
 // Fake Supabase en memoria (mismo patrón que execute.test.ts).
@@ -323,5 +328,194 @@ describe('actualizar_estado_cita (confirmado)', () => {
         argsWith(db, 'actualizar_estado_cita', { appointment_id: 'a-1', estado: 'pendiente' }),
       ),
     ).rejects.toThrow()
+  })
+})
+
+// ------------------------------------------------------------
+// confirmProposedAction / confirmActionsBatch — el gate humano del
+// plan multi-paso: transición atómica por acción, ejecución secuencial
+// y "un paso fallido no frena los siguientes".
+// ------------------------------------------------------------
+
+const FUTURE = '2026-07-08T17:00:00Z' // expira 1h después de NOW
+
+function proposedRow(id: string, overrides: Row = {}): Row {
+  return {
+    id,
+    account_id: ACCOUNT,
+    session_id: 'sess-1',
+    message_id: 'msg-1',
+    tool_name: 'crear_nota_paciente',
+    input: { args: { contact_id: 'c-1', dato: 'nota', categoria: 'nota' } },
+    summary: `Paso ${id}`,
+    status: 'proposed',
+    expires_at: FUTURE,
+    ...overrides,
+  }
+}
+
+function batchArgs(
+  db: ReturnType<typeof fakeDb>,
+  actionIds: string[],
+  execute: (a: ExecuteConfirmedActionArgs) => Promise<Record<string, unknown>>,
+) {
+  return {
+    db: db as never,
+    accountId: ACCOUNT,
+    userId: USER,
+    timezone: 'America/Mexico_City',
+    now: NOW,
+    actionIds,
+    // Identidad del plan: el mensaje del asistente que lo propuso.
+    sessionId: 'sess-1',
+    messageId: 'msg-1',
+    execute,
+  }
+}
+
+describe('confirmActionsBatch (plan multi-paso)', () => {
+  it('ejecuta los pasos EN ORDEN y persiste executed con su resultado', async () => {
+    const db = fakeDb({
+      assistant_actions: [proposedRow('act-1'), proposedRow('act-2')],
+    })
+    const order: string[] = []
+    const execute = vi.fn(async (a: ExecuteConfirmedActionArgs) => {
+      order.push(String(a.input.contact_id ?? ''))
+      return { mensaje: 'ok' }
+    })
+
+    const outcomes = await confirmActionsBatch(
+      batchArgs(db, ['act-1', 'act-2'], execute),
+    )
+
+    expect(outcomes.map((o) => o.status)).toEqual(['executed', 'executed'])
+    expect(execute).toHaveBeenCalledTimes(2)
+    expect(db.store.assistant_actions.every((r) => r.status === 'executed')).toBe(true)
+    expect(db.store.assistant_actions[0].resolved_by).toBe(USER)
+  })
+
+  it('un paso fallido NO impide ejecutar los siguientes', async () => {
+    const db = fakeDb({
+      assistant_actions: [
+        proposedRow('act-1'),
+        proposedRow('act-2'),
+        proposedRow('act-3'),
+      ],
+    })
+    const execute = vi.fn(async () => ({ mensaje: 'ok' }))
+    execute.mockImplementationOnce(async () => ({ mensaje: 'ok' }))
+    execute.mockImplementationOnce(async () => {
+      throw new Error('Ese hueco ya no está libre.')
+    })
+
+    const outcomes = await confirmActionsBatch(
+      batchArgs(db, ['act-1', 'act-2', 'act-3'], execute),
+    )
+
+    expect(outcomes.map((o) => o.status)).toEqual(['executed', 'failed', 'executed'])
+    expect(outcomes[1].error).toContain('hueco')
+    const rows = db.store.assistant_actions
+    expect(rows.find((r) => r.id === 'act-2')?.status).toBe('failed')
+    expect(rows.find((r) => r.id === 'act-3')?.status).toBe('executed')
+  })
+
+  it('rechaza acciones de OTRA cuenta o que ya no están proposed (conflict, sin ejecutar)', async () => {
+    const db = fakeDb({
+      assistant_actions: [
+        proposedRow('act-otra-cuenta', { account_id: 'acc-ajena' }),
+        proposedRow('act-resuelta', { status: 'executed' }),
+        proposedRow('act-expirada', { expires_at: '2026-07-08T15:00:00Z' }),
+        proposedRow('act-ok'),
+      ],
+    })
+    const execute = vi.fn(async () => ({ mensaje: 'ok' }))
+
+    const outcomes = await confirmActionsBatch(
+      batchArgs(db, ['act-otra-cuenta', 'act-resuelta', 'act-expirada', 'act-ok'], execute),
+    )
+
+    expect(outcomes.map((o) => o.status)).toEqual([
+      'conflict',
+      'conflict',
+      'conflict',
+      'executed',
+    ])
+    // Solo el paso válido llegó al ejecutor.
+    expect(execute).toHaveBeenCalledTimes(1)
+    // La fila ajena no se tocó.
+    expect(
+      db.store.assistant_actions.find((r) => r.id === 'act-otra-cuenta')?.status,
+    ).toBe('proposed')
+  })
+
+  it('rechaza acciones de OTRO mensaje u OTRA sesión (conflict, sin ejecutar) y corre en orden las del plan', async () => {
+    const db = fakeDb({
+      assistant_actions: [
+        proposedRow('act-1'),
+        proposedRow('act-otro-msg', { message_id: 'msg-AJENO' }),
+        proposedRow('act-otra-sesion', { session_id: 'sess-AJENA' }),
+        proposedRow('act-2'),
+      ],
+    })
+    const order: string[] = []
+    const execute = vi.fn(async (a: ExecuteConfirmedActionArgs) => {
+      order.push(String(a.input.dato ?? ''))
+      return { mensaje: 'ok' }
+    })
+    db.store.assistant_actions.find((r) => r.id === 'act-1')!.input = {
+      args: { contact_id: 'c-1', dato: 'primera', categoria: 'nota' },
+    }
+    db.store.assistant_actions.find((r) => r.id === 'act-2')!.input = {
+      args: { contact_id: 'c-1', dato: 'segunda', categoria: 'nota' },
+    }
+
+    const outcomes = await confirmActionsBatch(
+      batchArgs(db, ['act-1', 'act-otro-msg', 'act-otra-sesion', 'act-2'], execute),
+    )
+
+    expect(outcomes.map((o) => o.status)).toEqual([
+      'executed',
+      'conflict',
+      'conflict',
+      'executed',
+    ])
+    expect(outcomes[1].error).toContain('no pertenece a este plan')
+    expect(outcomes[2].error).toContain('no pertenece a este plan')
+    // Solo los pasos del plan llegaron al ejecutor, EN ORDEN.
+    expect(execute).toHaveBeenCalledTimes(2)
+    expect(order).toEqual(['primera', 'segunda'])
+    // Las propuestas ajenas quedaron intactas (siguen proposed, sin
+    // resolved_by): nadie las tocó.
+    for (const id of ['act-otro-msg', 'act-otra-sesion']) {
+      const row = db.store.assistant_actions.find((r) => r.id === id)
+      expect(row?.status).toBe('proposed')
+      expect(row?.resolved_by).toBeUndefined()
+    }
+  })
+
+  it('un action_id inexistente vuelve como conflict sin frenar el resto del plan', async () => {
+    const db = fakeDb({ assistant_actions: [proposedRow('act-1')] })
+    const execute = vi.fn(async () => ({ mensaje: 'ok' }))
+
+    const outcomes = await confirmActionsBatch(
+      batchArgs(db, ['act-fantasma', 'act-1'], execute),
+    )
+
+    expect(outcomes.map((o) => o.status)).toEqual(['conflict', 'executed'])
+    expect(outcomes[0].error).toContain('no pertenece a este plan')
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('confirmProposedAction: doble confirmación → la segunda es conflict', async () => {
+    const db = fakeDb({ assistant_actions: [proposedRow('act-1')] })
+    const execute = vi.fn(async () => ({ mensaje: 'ok' }))
+    const base = { ...batchArgs(db, [], execute), actionId: 'act-1' }
+
+    const first = await confirmProposedAction(base)
+    const second = await confirmProposedAction(base)
+
+    expect(first.status).toBe('executed')
+    expect(second.status).toBe('conflict')
+    expect(execute).toHaveBeenCalledTimes(1)
   })
 })

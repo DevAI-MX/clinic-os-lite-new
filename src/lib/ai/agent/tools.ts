@@ -82,6 +82,38 @@ export interface RunClinicalAgentArgs {
   executeTool?: ToolExecutor
 }
 
+/** Traza mínima de una llamada a herramienta dentro del turno. La
+ *  consumen los guardrails (validar que la respuesta esté respaldada
+ *  por tools reales) — vive en el resultado, NUNCA se manda a consola
+ *  (los console.log de los loops siguen registrando solo nombres). */
+export interface ToolTrace {
+  name: string
+  /** Input saneado: solo primitivos, strings truncados. */
+  input: Record<string, unknown>
+  /** El content del tool_result que vio el modelo. */
+  content: string
+  isError: boolean
+}
+
+const MAX_TRACE_STRING = 200
+
+/** Sanea el input crudo del modelo para la traza: primitivos tal cual,
+ *  strings truncados, objetos anidados como marcador. */
+export function sanitizeToolInput(input: unknown): Record<string, unknown> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {}
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof v === 'string') {
+      out[k] = v.length > MAX_TRACE_STRING ? `${v.slice(0, MAX_TRACE_STRING)}…` : v
+    } else if (typeof v === 'number' || typeof v === 'boolean' || v == null) {
+      out[k] = v
+    } else {
+      out[k] = '[objeto]'
+    }
+  }
+  return out
+}
+
 /** Salida del loop: mismo contrato { text, handoff } que generateReply. */
 export interface RunClinicalAgentResult {
   /** Texto para el paciente (centinela de handoff ya removido). */
@@ -90,6 +122,8 @@ export interface RunClinicalAgentResult {
   handoff: boolean
   /** Se ejecutó escalar_a_humano: el equipo fue notificado (el modo IA no cambia). */
   escalated: boolean
+  /** Tools ejecutadas en el turno, en orden (para guardrails). */
+  traces: ToolTrace[]
 }
 
 /** Estados del embudo (soft) que el modelo puede asignar a un lead. */

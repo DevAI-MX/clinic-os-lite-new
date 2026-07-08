@@ -42,6 +42,12 @@ export interface ConciergeAttachment {
 
 export interface ConciergeMessage {
   id: string;
+  /** Id REAL de la fila en assistant_messages (null mientras el turno
+   *  en vivo no se ha persistido). Es el "plan_id" que confirm-batch
+   *  exige para validar que las acciones pertenecen a este plan. */
+  dbId: string | null;
+  /** Sesión a la que pertenece el mensaje (para confirm-batch). */
+  sessionId: string | null;
   role: 'user' | 'assistant';
   content: string;
   actionIds: string[];
@@ -50,9 +56,16 @@ export interface ConciergeMessage {
   viaVoz: boolean;
 }
 
+/** Identidad del plan que confirm-batch valida server-side. */
+export interface PlanRef {
+  sessionId: string;
+  messageId: string;
+}
+
 interface StreamEvent {
   type: 'session' | 'status' | 'action_proposal' | 'block' | 'text' | 'done' | 'error';
   sessionId?: string;
+  messageId?: string | null;
   label?: string;
   action?: {
     id: string;
@@ -90,7 +103,17 @@ function emptyMessage(
   role: 'user' | 'assistant',
   content = '',
 ): ConciergeMessage {
-  return { id, role, content, actionIds: [], blocks: [], attachments: [], viaVoz: false };
+  return {
+    id,
+    dbId: null,
+    sessionId: null,
+    role,
+    content,
+    actionIds: [],
+    blocks: [],
+    attachments: [],
+    viaVoz: false,
+  };
 }
 
 export function useConciergeChat(opts: { onNavigate?: (href: string) => void } = {}) {
@@ -166,6 +189,8 @@ export function useConciergeChat(opts: { onNavigate?: (href: string) => void } =
             };
             return {
               id: m.id as string,
+              dbId: m.id as string,
+              sessionId,
               role: m.role as 'user' | 'assistant',
               content: (m.content as string) ?? '',
               actionIds: actionsByMessage[m.id as string] ?? [],
@@ -297,6 +322,14 @@ export function useConciergeChat(opts: { onNavigate?: (href: string) => void } =
               turnError = event.message ?? 'El turno falló.';
               break;
             case 'done':
+              // El turno ya quedó persistido: el messageId real habilita
+              // "Confirmar plan" (confirm-batch lo exige para validar el
+              // lote). Hasta este momento el botón del plan va deshabilitado.
+              if (event.messageId) {
+                const dbId = event.messageId;
+                const sessionId = resolvedSessionId;
+                upsertAssistant((m) => ({ ...m, dbId, sessionId }));
+              }
               break;
           }
         };
@@ -346,6 +379,83 @@ export function useConciergeChat(opts: { onNavigate?: (href: string) => void } =
     },
     [],
   );
+
+  /**
+   * "Confirmar plan": ejecuta en orden todas las propuestas del plan
+   * vía confirm-batch (server-side reusa el mismo gate atómico que el
+   * confirm individual y valida que cada acción pertenezca al plan —
+   * misma cuenta, sesión y mensaje). Un paso fallido no frena los
+   * siguientes; cada tarjeta se actualiza con su resultado.
+   */
+  const confirmBatch = useCallback(async (actionIds: string[], plan: PlanRef) => {
+    if (actionIds.length === 0) return;
+    setActions((prev) => {
+      const next = { ...prev };
+      for (const id of actionIds) {
+        if (next[id]) next[id] = { ...next[id], status: 'executing' };
+      }
+      return next;
+    });
+    const failAll = (message: string) =>
+      setActions((prev) => {
+        const next = { ...prev };
+        for (const id of actionIds) {
+          if (next[id] && next[id].status === 'executing') {
+            next[id] = { ...next[id], status: 'failed', error: message };
+          }
+        }
+        return next;
+      });
+    try {
+      const res = await fetch('/api/ai/concierge/actions/confirm-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action_ids: actionIds,
+          session_id: plan.sessionId,
+          message_id: plan.messageId,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      const results = Array.isArray(data.results)
+        ? (data.results as {
+            action_id: string;
+            status: string;
+            result?: { mensaje?: string };
+            error?: string;
+          }[])
+        : null;
+      if (!res.ok || !results) {
+        failAll(data.error ?? 'No pude ejecutar el plan.');
+        return;
+      }
+      setActions((prev) => {
+        const next = { ...prev };
+        for (const r of results) {
+          const current = next[r.action_id];
+          if (!current) continue;
+          if (r.status === 'executed') {
+            next[r.action_id] = {
+              ...current,
+              status: 'executed',
+              resultMessage: r.result?.mensaje ?? undefined,
+            };
+          } else if (r.status === 'conflict') {
+            next[r.action_id] = { ...current, status: 'expired' };
+          } else {
+            next[r.action_id] = {
+              ...current,
+              status: 'failed',
+              error: r.error ?? 'La acción falló al ejecutarse.',
+            };
+          }
+        }
+        return next;
+      });
+    } catch {
+      failAll('No pude contactar al servidor.');
+    }
+  }, []);
 
   const resolveAction = useCallback(
     async (actionId: string, verb: 'confirm' | 'cancel') => {
@@ -412,5 +522,6 @@ export function useConciergeChat(opts: { onNavigate?: (href: string) => void } =
     send,
     confirmAction: (id: string) => resolveAction(id, 'confirm'),
     cancelAction: (id: string) => resolveAction(id, 'cancel'),
+    confirmBatch,
   };
 }

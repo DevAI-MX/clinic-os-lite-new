@@ -340,3 +340,164 @@ export async function executeConfirmedAction(
       throw new Error(`Acción desconocida: ${args.toolName}`)
   }
 }
+
+// ------------------------------------------------------------
+// Confirmación de propuestas (individual y en lote)
+// ------------------------------------------------------------
+
+export interface ConfirmActionOutcome {
+  action_id: string
+  /** executed | failed (la mutación corrió y falló) | conflict (ya
+   *  resuelta/expirada/de otra cuenta) | error (fallo de BD). */
+  status: 'executed' | 'failed' | 'conflict' | 'error'
+  summary?: string
+  result?: Record<string, unknown>
+  error?: string
+}
+
+export interface ConfirmProposedActionArgs {
+  /** Cliente RLS del usuario que confirma (nunca service-role). */
+  db: SupabaseClient
+  accountId: string
+  userId: string
+  timezone: string
+  now: Date
+  actionId: string
+  /** Inyectable para tests; default executeConfirmedAction. */
+  execute?: (args: ExecuteConfirmedActionArgs) => Promise<Record<string, unknown>>
+}
+
+/**
+ * El gate humano completo para UNA propuesta: transición atómica
+ * proposed → executing (el UPDATE condicionado es el candado — dos
+ * clics simultáneos solo ganan uno), ejecución con el cliente RLS del
+ * usuario y persistencia executed|failed. Nunca lanza: todo vuelve
+ * como outcome tipado. Lo comparten el confirm individual y el batch.
+ */
+export async function confirmProposedAction(
+  args: ConfirmProposedActionArgs,
+): Promise<ConfirmActionOutcome> {
+  const { db, accountId, userId, actionId } = args
+  const execute = args.execute ?? executeConfirmedAction
+  const nowIso = args.now.toISOString()
+
+  const { data: action, error } = await db
+    .from('assistant_actions')
+    .update({ status: 'executing', resolved_by: userId, resolved_at: nowIso })
+    .eq('id', actionId)
+    .eq('account_id', accountId)
+    .eq('status', 'proposed')
+    .gt('expires_at', nowIso)
+    .select('id, tool_name, input, summary')
+    .maybeSingle()
+  if (error) {
+    console.error('[concierge/confirm] transition error:', error)
+    return { action_id: actionId, status: 'error', error: 'No pude confirmar la acción.' }
+  }
+  if (!action) {
+    return {
+      action_id: actionId,
+      status: 'conflict',
+      error: 'La propuesta ya fue resuelta o expiró.',
+    }
+  }
+
+  const input =
+    action.input && typeof action.input === 'object'
+      ? ((action.input as { args?: Record<string, unknown> }).args ?? {})
+      : {}
+
+  try {
+    const result = await execute({
+      db,
+      accountId,
+      userId,
+      timezone: args.timezone,
+      now: args.now,
+      toolName: action.tool_name as ConciergeWriteToolName,
+      input,
+    })
+    await db
+      .from('assistant_actions')
+      .update({ status: 'executed', result })
+      .eq('id', actionId)
+      .eq('account_id', accountId)
+    return {
+      action_id: actionId,
+      status: 'executed',
+      summary: action.summary as string,
+      result,
+    }
+  } catch (execErr) {
+    const message =
+      execErr instanceof Error ? execErr.message : 'La acción falló al ejecutarse.'
+    await db
+      .from('assistant_actions')
+      .update({ status: 'failed', error: message })
+      .eq('id', actionId)
+      .eq('account_id', accountId)
+    return {
+      action_id: actionId,
+      status: 'failed',
+      summary: action.summary as string,
+      error: message,
+    }
+  }
+}
+
+export interface ConfirmActionsBatchArgs
+  extends Omit<ConfirmProposedActionArgs, 'actionId'> {
+  actionIds: string[]
+  /** Sesión del plan — toda acción del lote debe pertenecerle. */
+  sessionId: string
+  /** Mensaje del asistente que propuso el plan (su "plan_id"): toda
+   *  acción del lote debe estar ligada a ÉL. Evita que un payload
+   *  arme un lote con propuestas de otros turnos u otras sesiones. */
+  messageId: string
+}
+
+/**
+ * Confirma un PLAN: ejecuta las propuestas UNA POR UNA, en el orden
+ * recibido, sin detenerse cuando un paso falla (el hueco ocupado de la
+ * cita 2 no debe frenar la nota de la 3). Antes de ejecutar NADA se
+ * verifica que cada action_id pertenezca al plan (misma cuenta, misma
+ * sesión y mismo mensaje): un id ajeno vuelve como 'conflict' en su
+ * paso y no se ejecuta. Cada paso válido pasa por el mismo candado
+ * atómico que el confirm individual — nada se ejecuta dos veces ni
+ * fuera de la cuenta.
+ */
+export async function confirmActionsBatch(
+  args: ConfirmActionsBatchArgs,
+): Promise<ConfirmActionOutcome[]> {
+  const { db, accountId, sessionId, messageId, actionIds } = args
+
+  const { data: rows, error: lookupErr } = await db
+    .from('assistant_actions')
+    .select('id, session_id, message_id')
+    .in('id', actionIds)
+    .eq('account_id', accountId)
+  if (lookupErr) {
+    console.error('[concierge/confirm-batch] plan lookup error:', lookupErr)
+    return actionIds.map((actionId) => ({
+      action_id: actionId,
+      status: 'error' as const,
+      error: 'No pude verificar el plan.',
+    }))
+  }
+  const byId = new Map((rows ?? []).map((r) => [r.id as string, r]))
+
+  const outcomes: ConfirmActionOutcome[] = []
+  for (const actionId of actionIds) {
+    const row = byId.get(actionId)
+    if (!row || row.session_id !== sessionId || row.message_id !== messageId) {
+      outcomes.push({
+        action_id: actionId,
+        status: 'conflict',
+        error: 'Esa propuesta no pertenece a este plan.',
+      })
+      continue
+    }
+    outcomes.push(await confirmProposedAction({ ...args, actionId }))
+  }
+  return outcomes
+}

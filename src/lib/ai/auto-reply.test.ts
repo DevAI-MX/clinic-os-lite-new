@@ -11,10 +11,14 @@ const h = vi.hoisted(() => ({
   zernioSendToConversation: vi.fn(),
   runClinicalAgent: vi.fn(),
   buildRecentImageNotes: vi.fn(),
+  validateClinicalReply: vi.fn(),
+  buildClinicalFallbackReply: vi.fn(),
   state: {
     conv: null as Record<string, unknown> | null,
     autoResponders: [] as { id: string }[],
     claim: true as boolean,
+    // Error forzado del RPC claim_ai_reply_slot (camino claim_error).
+    claimError: null as { message: string } | null,
     updatePayload: null as Record<string, unknown> | null,
     rpcCalls: [] as { name: string; args: unknown }[],
     dispatchDueAt: null as string | null,
@@ -46,7 +50,10 @@ vi.mock('./agent', () => ({
   runClinicalAgent: h.runClinicalAgent,
   buildClinicalSystemPrompt: () => 'sys-prompt',
   buildPatientStateLines: async () => [],
+  buildReceptionFlowLines: async () => [],
   buildRecentImageNotes: h.buildRecentImageNotes,
+  validateClinicalReply: h.validateClinicalReply,
+  buildClinicalFallbackReply: h.buildClinicalFallbackReply,
   clinicTimezone: () => 'America/Mexico_City',
 }))
 vi.mock('./admin-client', () => ({
@@ -195,6 +202,9 @@ vi.mock('./admin-client', () => ({
         if (won) h.state.dispatchDueAt = null
         return Promise.resolve({ data: won, error: null })
       }
+      if (h.state.claimError) {
+        return Promise.resolve({ data: null, error: h.state.claimError })
+      }
       return Promise.resolve({ data: h.state.claim, error: null })
     },
   }),
@@ -232,6 +242,7 @@ beforeEach(() => {
   }
   h.state.autoResponders = []
   h.state.claim = true
+  h.state.claimError = null
   h.state.updatePayload = null
   h.state.rpcCalls = []
   h.state.dispatchDueAt = null
@@ -245,8 +256,17 @@ beforeEach(() => {
   h.retrieveKnowledge.mockResolvedValue([])
   h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false })
   h.engineSendText.mockResolvedValue({ whatsapp_message_id: 'm1' })
-  h.runClinicalAgent.mockResolvedValue({ text: 'Hola!', handoff: false, escalated: false })
+  h.runClinicalAgent.mockResolvedValue({
+    text: 'Hola!',
+    handoff: false,
+    escalated: false,
+    traces: [],
+  })
   h.buildRecentImageNotes.mockResolvedValue([])
+  h.validateClinicalReply.mockReturnValue({ ok: true, reasons: [] })
+  h.buildClinicalFallbackReply.mockReturnValue(
+    'Gracias por escribirme. Lo reviso con el equipo para darte una respuesta correcta por aquí.',
+  )
 })
 
 describe('dispatchInboundToAiReply — eligibility gates', () => {
@@ -453,6 +473,207 @@ describe('dispatchInboundToAiReply — handoff', () => {
     // equipo se enterara: ahora siempre hay aviso.
     expect(h.state.notifications).toHaveLength(1)
     expect(h.state.notifications[0].type).toBe('ai_escalation')
+  })
+})
+
+// Guardrail determinista (guardrails.ts): una respuesta clínica sin
+// respaldo (precio sin tool, confirmación inventada) NO sale — pero el
+// paciente tampoco queda en visto: recibe un fallback neutro de
+// contención y el equipo el aviso, con el modo IA intacto.
+describe('dispatchInboundToAiReply — guardrail de respuesta insegura', () => {
+  const FALLBACK =
+    'Gracias por escribirme. Lo reviso con el equipo para darte una respuesta correcta por aquí.'
+
+  beforeEach(() => {
+    h.loadAiConfig.mockResolvedValue(aiConfig({ clinicalAgentEnabled: true }))
+  })
+
+  it('no envía el texto inseguro: en su lugar sale el fallback y se avisa al equipo', async () => {
+    h.validateClinicalReply.mockReturnValue({
+      ok: false,
+      reasons: ['menciona un precio sin haber consultado el catálogo'],
+    })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchInboundToAiReply(ARGS)
+    } finally {
+      errSpy.mockRestore()
+    }
+    // El texto que generó el modelo ('Hola!') jamás sale.
+    expect(h.engineSendText).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'Hola!' }),
+    )
+    // El fallback neutro sí, y consume slot como cualquier envío.
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-1', text: FALLBACK }),
+    )
+    expect(h.state.rpcCalls).toContainEqual({
+      name: 'claim_ai_reply_slot',
+      args: { conversation_id: 'conv-1', max_replies: 3 },
+    })
+    expect(h.state.notifications).toHaveLength(1)
+    expect(h.state.notifications[0].title).toBe(
+      'El agente generó una respuesta insegura',
+    )
+    expect(String(h.state.notifications[0].body)).toContain('precio')
+    expect(String(h.state.notifications[0].body)).toContain('contención')
+    // El texto inseguro del modelo NUNCA viaja en el aviso (puede
+    // traer datos del paciente) — solo los motivos.
+    expect(String(h.state.notifications[0].body)).not.toContain('Hola!')
+    // El modo IA queda intacto: el siguiente inbound se reintenta.
+    expect(h.state.conv?.ai_autoreply_disabled).toBe(false)
+  })
+
+  it('si un humano tomó el hilo antes del fallback, NO se envía y el aviso lo dice', async () => {
+    // El gate del fallback relee la conversación: si cambió de manos
+    // mientras el modelo generaba, ni el fallback sale.
+    h.validateClinicalReply.mockImplementation(() => {
+      h.state.conv = {
+        assigned_agent_id: 'agent-9',
+        ai_autoreply_disabled: false,
+        ai_reply_count: 0,
+      }
+      return { ok: false, reasons: ['motivo x'] }
+    })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchInboundToAiReply(ARGS)
+    } finally {
+      errSpy.mockRestore()
+    }
+    expect(h.engineSendText).not.toHaveBeenCalled()
+    expect(h.state.rpcCalls).toHaveLength(0) // ni siquiera intenta el claim
+    expect(h.state.notifications).toHaveLength(1)
+    expect(String(h.state.notifications[0].body)).toContain('modo humano')
+  })
+
+  it('si el fallback pierde el claim (tope), no se envía y hay UN solo aviso', async () => {
+    h.state.claim = false
+    h.validateClinicalReply.mockReturnValue({ ok: false, reasons: ['motivo x'] })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchInboundToAiReply(ARGS)
+    } finally {
+      errSpy.mockRestore()
+    }
+    expect(h.engineSendText).not.toHaveBeenCalled()
+    // Un solo aviso (el de respuesta insegura, que ya explica el tope) —
+    // no un segundo aviso de tope encimado.
+    expect(h.state.notifications).toHaveLength(1)
+    expect(h.state.notifications[0].title).toBe(
+      'El agente generó una respuesta insegura',
+    )
+    expect(String(h.state.notifications[0].body)).toContain('tope')
+  })
+
+  it('gate_error: si no se puede LEER el estado del hilo, el aviso da la causa técnica (no "modo humano")', async () => {
+    // La fila de conversación "desaparece" para el gate del fallback:
+    // eso es un fallo de lectura, no un hilo en modo humano — el aviso
+    // debe distinguirlos.
+    h.validateClinicalReply.mockImplementation(() => {
+      h.state.conv = null
+      return { ok: false, reasons: ['motivo x'] }
+    })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchInboundToAiReply(ARGS)
+    } finally {
+      errSpy.mockRestore()
+    }
+    expect(h.engineSendText).not.toHaveBeenCalled()
+    expect(h.state.notifications).toHaveLength(1)
+    const body = String(h.state.notifications[0].body)
+    expect(body).toContain('falló la lectura del estado')
+    expect(body).not.toContain('modo humano')
+  })
+
+  it('claim_error: si el RPC del slot falla, el aviso da la causa técnica (no "tope")', async () => {
+    h.state.claimError = { message: 'connection reset' }
+    h.validateClinicalReply.mockReturnValue({ ok: false, reasons: ['motivo x'] })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchInboundToAiReply(ARGS)
+    } finally {
+      errSpy.mockRestore()
+    }
+    expect(h.engineSendText).not.toHaveBeenCalled()
+    expect(h.state.notifications).toHaveLength(1)
+    const body = String(h.state.notifications[0].body)
+    expect(body).toContain('falló el registro del turno')
+    expect(body).not.toContain('tope')
+  })
+
+  it('si el envío del fallback falla, el aviso lo dice (nunca silencio, un solo aviso)', async () => {
+    h.validateClinicalReply.mockReturnValue({ ok: false, reasons: ['motivo x'] })
+    h.engineSendText.mockRejectedValue(new Error('Zernio API error: 401'))
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchInboundToAiReply(ARGS)
+    } finally {
+      errSpy.mockRestore()
+    }
+    expect(h.state.notifications).toHaveLength(1)
+    expect(h.state.notifications[0].title).toBe(
+      'El agente generó una respuesta insegura',
+    )
+    expect(String(h.state.notifications[0].body)).toContain('falló')
+  })
+
+  it('el fallback no dispara frases prohibidas del propio guardrail', async () => {
+    // El texto de contención (mockeado igual al genérico real) pasa el
+    // validador REAL: sin montos, sin horas, sin "quedó confirmado".
+    const { validateClinicalReply: realValidate } = await import('./agent/guardrails')
+    const recheck = realValidate({ text: FALLBACK, traces: [], stateLines: [] })
+    expect(recheck.ok).toBe(true)
+    expect(recheck.reasons).toEqual([])
+  })
+
+  it('recibe las trazas del turno y el snapshot para validar', async () => {
+    h.runClinicalAgent.mockResolvedValue({
+      text: 'Son $800',
+      handoff: false,
+      escalated: false,
+      traces: [{ name: 'consultar_catalogo', input: {}, content: '{}', isError: false }],
+    })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.validateClinicalReply).toHaveBeenCalledWith({
+      text: 'Son $800',
+      traces: [{ name: 'consultar_catalogo', input: {}, content: '{}', isError: false }],
+      stateLines: [],
+    })
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+  })
+
+  it('la rama sin agente clínico NO pasa por el guardrail (no tiene tools)', async () => {
+    h.loadAiConfig.mockResolvedValue(aiConfig({ clinicalAgentEnabled: false }))
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.validateClinicalReply).not.toHaveBeenCalled()
+    expect(h.buildClinicalFallbackReply).not.toHaveBeenCalled()
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+  })
+
+  it('resume: bloquea y avisa pero NO manda fallback (el equipo acaba de soltar el hilo)', async () => {
+    h.buildConversationContext.mockResolvedValue([
+      { role: 'user', content: 'me confirman?' },
+    ])
+    h.validateClinicalReply.mockReturnValue({
+      ok: false,
+      reasons: ['afirma que un pago quedó confirmado'],
+    })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchAiResume(ARGS)
+    } finally {
+      errSpy.mockRestore()
+    }
+    expect(h.engineSendText).not.toHaveBeenCalled()
+    expect(h.buildClinicalFallbackReply).not.toHaveBeenCalled()
+    expect(h.state.notifications).toHaveLength(1)
+    expect(h.state.notifications[0].title).toBe(
+      'El agente generó una respuesta insegura',
+    )
+    expect(String(h.state.notifications[0].body)).toContain('retómalo tú')
   })
 })
 

@@ -18,8 +18,10 @@ import { parseGeneration } from '../generate'
 import { providerHttpError, toNetworkError } from '../providers/shared'
 import {
   CLINICAL_TOOLS,
+  sanitizeToolInput,
   type RunClinicalAgentArgs,
   type RunClinicalAgentResult,
+  type ToolTrace,
 } from './tools'
 import { executeClinicalTool } from './execute'
 import { runOpenAiAgent } from './loop-openai'
@@ -140,6 +142,7 @@ async function runAnthropicAgent(
   const timeoutMs = aiRequestTimeoutMs()
   const messages = normalizeInitial(args.messages)
   let escalated = false
+  const traces: ToolTrace[] = []
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const data = await callAnthropic(args, messages, timeoutMs)
@@ -157,7 +160,7 @@ async function runAnthropicAgent(
     )
     if (data.stop_reason !== 'tool_use' || toolUses.length === 0) {
       const { text, handoff } = parseGeneration(collectText(blocks))
-      return { text, handoff, escalated }
+      return { text, handoff, escalated, traces }
     }
 
     const executeTool = args.executeTool ?? executeClinicalTool
@@ -165,6 +168,12 @@ async function runAnthropicAgent(
     for (const tu of toolUses) {
       const r = await executeTool(tu.name, tu.input, args.ctx)
       if (r.escalated) escalated = true
+      traces.push({
+        name: tu.name,
+        input: sanitizeToolInput(tu.input),
+        content: r.content,
+        isError: r.isError ?? false,
+      })
       results.push({
         type: 'tool_result',
         tool_use_id: tu.id,
@@ -181,5 +190,5 @@ async function runAnthropicAgent(
     .reverse()
     .find((m) => m.role === 'assistant' && Array.isArray(m.content))
   const text = lastAssistant ? collectText(lastAssistant.content as ContentBlock[]) : ''
-  return { text, handoff: false, escalated }
+  return { text, handoff: false, escalated, traces }
 }

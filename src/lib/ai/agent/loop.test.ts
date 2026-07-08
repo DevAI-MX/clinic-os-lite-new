@@ -64,6 +64,15 @@ describe('runClinicalAgent', () => {
     expect(res.text).toBe('La valoración va de $500 a $800!')
     expect(res.handoff).toBe(false)
     expect(res.escalated).toBe(false)
+    // Traza del turno (la consumen los guardrails de auto-reply).
+    expect(res.traces).toEqual([
+      {
+        name: 'consultar_catalogo',
+        input: {},
+        content: JSON.stringify({ ok: true, total: 1 }),
+        isError: false,
+      },
+    ])
     expect(execMock).toHaveBeenCalledWith('consultar_catalogo', {}, CTX)
     expect(fetchMock).toHaveBeenCalledTimes(2)
 
