@@ -37,7 +37,18 @@ const h = vi.hoisted(() => ({
 }))
 
 vi.mock('./config', () => ({ loadAiConfig: h.loadAiConfig }))
-vi.mock('./context', () => ({ buildConversationContext: h.buildConversationContext }))
+// buildConversationContext se mockea (lee BD); los helpers puros del
+// transcript (marcador de equipo / último enviado) se usan REALES para
+// que el wiring del guardrail se pruebe con su comportamiento de verdad.
+vi.mock('./context', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./context')>()
+  return {
+    TEAM_PREFIX: actual.TEAM_PREFIX,
+    teamMessageTexts: actual.teamMessageTexts,
+    lastAssistantText: actual.lastAssistantText,
+    buildConversationContext: h.buildConversationContext,
+  }
+})
 vi.mock('./knowledge', () => ({ retrieveKnowledge: h.retrieveKnowledge }))
 vi.mock('./generate', () => ({ generateReply: h.generateReply }))
 vi.mock('@/lib/flows/meta-send', () => ({ engineSendText: h.engineSendText }))
@@ -644,6 +655,8 @@ describe('dispatchInboundToAiReply — guardrail de respuesta insegura', () => {
       text: 'Son $800',
       traces: [{ name: 'consultar_catalogo', input: {}, content: '{}', isError: false }],
       stateLines: [],
+      teamMessages: [],
+      lastAssistantText: null,
     })
     expect(h.engineSendText).toHaveBeenCalledTimes(1)
   })
@@ -762,6 +775,8 @@ describe('dispatchInboundToAiReply — ronda de corrección tras el bloqueo', ()
       text: 'reparado',
       traces: [t1, t2],
       stateLines: [],
+      teamMessages: [],
+      lastAssistantText: null,
     })
     expect(h.engineSendText).toHaveBeenCalledWith(
       expect.objectContaining({ text: 'reparado' }),

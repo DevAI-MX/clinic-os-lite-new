@@ -85,7 +85,7 @@ export async function buildPatientStateLines(
     if (payment) {
       const amt = Number(payment.amount)
       lines.push(
-        `Hay un anticipo de ${Number.isFinite(amt) ? money(amt, payment.currency ?? 'MXN') : 'monto por confirmar'} EN REVISIÓN del equipo — no le vuelvas a pedir el pago; dile que le avisas al confirmarse.`,
+        `Hay un anticipo de ${Number.isFinite(amt) ? money(amt, payment.currency ?? 'MXN') : 'monto por confirmar'} EN REVISIÓN del equipo — no le vuelvas a pedir el pago; dile que le avisas al confirmarse. (Si el equipo ya le confirmó el pago por este chat en un mensaje "[Equipo]:", eso manda: no le digas que sigue en revisión.)`,
       )
     }
 
@@ -227,7 +227,7 @@ export async function buildReceptionFlowLines(
     // Paso 5 — siguiente acción, derivada solo de los hechos de arriba.
     if (payment) {
       lines.push(
-        '5. Siguiente paso: esperar la validación del equipo. Atiende otras dudas sin volver a cobrar; le avisas al paciente cuando el equipo lo confirme.',
+        '5. Siguiente paso: esperar la validación del equipo. Atiende otras dudas sin volver a cobrar; le avisas al paciente cuando el equipo lo confirme. (Si el equipo ya le confirmó el pago por este chat, no lo contradigas: da el pago por bueno.)',
       )
     } else if (appt && appt.deposit_status === 'pendiente') {
       lines.push(

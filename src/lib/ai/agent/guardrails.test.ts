@@ -454,3 +454,180 @@ describe('validateClinicalReply — casos neutros', () => {
     expect(v.ok).toBe(true)
   })
 })
+
+// ------------------------------------------------------------
+// Evidencia del equipo humano (incidente 2026-07-08: el equipo
+// confirmó un pago por chat y el guardrail obligaba a la IA a
+// responder "sigue en revisión", contradiciéndolo).
+// ------------------------------------------------------------
+
+describe('validateClinicalReply — mensajes del equipo humano como evidencia', () => {
+  const TEAM_MSG = 'Emiliano el pago se realizo correctamente, te esperamos hoy a las 4pm'
+
+  it('sin evidencia del equipo, "pago confirmado" sigue bloqueado', () => {
+    const v = validateClinicalReply({
+      text: 'Tu pago quedó confirmado, nos vemos!',
+      traces: [],
+      stateLines: [],
+    })
+    expect(v.ok).toBe(false)
+    expect(v.categories).toContain('pago_confirmado')
+  })
+
+  it('si el equipo ya confirmó el pago por chat, la IA puede repetirlo', () => {
+    const v = validateClinicalReply({
+      text: 'Sí Emiliano, tu pago quedó confirmado. Nos vemos hoy a las 4:00 pm!',
+      traces: [],
+      stateLines: [],
+      teamMessages: [TEAM_MSG],
+    })
+    expect(v.ok).toBe(true)
+  })
+
+  it('"te esperamos" del equipo legitima dar la cita por confirmada', () => {
+    const v = validateClinicalReply({
+      text: 'Tu cita quedó confirmada para hoy a las 4:00 pm 😊',
+      traces: [],
+      stateLines: [],
+      teamMessages: [TEAM_MSG],
+    })
+    expect(v.ok).toBe(true)
+  })
+
+  it('un horario que el equipo ya le dijo al paciente cuenta como respaldado', () => {
+    const v = validateClinicalReply({
+      text: 'Nos vemos hoy a las 4:00 pm!',
+      traces: [],
+      stateLines: [],
+      teamMessages: [TEAM_MSG],
+    })
+    expect(v.ok).toBe(true)
+  })
+
+  it('un mensaje del equipo que NO confirma nada no destraba confirmaciones', () => {
+    const v = validateClinicalReply({
+      text: 'Tu pago ya quedó confirmado!',
+      traces: [],
+      stateLines: [],
+      teamMessages: ['Hola, en un momento revisamos tu comprobante'],
+    })
+    expect(v.ok).toBe(false)
+    expect(v.categories).toContain('pago_confirmado')
+  })
+
+  it('el monto que el equipo mencionó por chat respalda la cifra', () => {
+    const v = validateClinicalReply({
+      text: 'Sí, recibimos tus $350!',
+      traces: [],
+      stateLines: [],
+      teamMessages: ['Ya nos llegaron tus $350, gracias'],
+    })
+    expect(v.ok).toBe(true)
+  })
+})
+
+// ------------------------------------------------------------
+// Anti-repetición (incidente 2026-07-08: el paciente aceptó "para hoy
+// a las 4" y el agente re-envió la MISMA lista de horarios).
+// ------------------------------------------------------------
+
+describe('validateClinicalReply — anti-repetición', () => {
+  const OFERTA =
+    'Emiliano, para tu valoración general (muelas del juicio) tenemos estos horarios disponibles  \nHoy a las 4:00 p.m. o lunes 13 de julio a las 5:00 p.m.  \nCuál te acomoda mejor?'
+
+  it('bloquea re-enviar textual el mismo mensaje anterior (aunque las horas estén respaldadas)', () => {
+    const v = validateClinicalReply({
+      text: OFERTA,
+      traces: [
+        trace('consultar_disponibilidad', {
+          content: '{"huecos":["hoy 4:00 p.m.","lunes 5:00 p.m."]}',
+        }),
+      ],
+      stateLines: [],
+      lastAssistantText: OFERTA,
+    })
+    expect(v.ok).toBe(false)
+    expect(v.categories).toContain('repeticion')
+    expect(v.reasons.some((r) => r.includes('repite'))).toBe(true)
+  })
+
+  it('bloquea también la repetición casi idéntica (puntuación/acentos distintos)', () => {
+    const v = validateClinicalReply({
+      text: 'Emiliano para tu valoracion general muelas del juicio tenemos estos horarios disponibles hoy a las 4:00 pm o lunes 13 de julio a las 5:00 pm cual te acomoda mejor',
+      traces: [
+        trace('consultar_disponibilidad', {
+          content: '{"huecos":["hoy 4:00 p.m.","lunes 5:00 p.m."]}',
+        }),
+      ],
+      stateLines: [],
+      lastAssistantText: OFERTA,
+    })
+    expect(v.ok).toBe(false)
+    expect(v.categories).toContain('repeticion')
+  })
+
+  it('una respuesta distinta que avanza el flujo pasa', () => {
+    const v = validateClinicalReply({
+      text: 'Perfecto Emiliano, te aparto hoy a las 4:00 p.m. Para confirmar tu lugar envíame tu comprobante del anticipo de $350.',
+      traces: [
+        trace('agendar_cita', {
+          content: '{"cita":"hoy 4:00 p.m.","anticipo":"$350"}',
+        }),
+      ],
+      stateLines: [],
+      lastAssistantText: OFERTA,
+    })
+    expect(v.ok).toBe(true)
+  })
+
+  it('las cortesías cortas repetidas no se bloquean', () => {
+    const v = validateClinicalReply({
+      text: 'Nos vemos! 😊',
+      traces: [],
+      stateLines: [],
+      lastAssistantText: 'Nos vemos! 😊',
+    })
+    expect(v.ok).toBe(true)
+  })
+
+  it('sin lastAssistantText el candado queda apagado (compat)', () => {
+    const v = validateClinicalReply({
+      text: OFERTA,
+      traces: [
+        trace('consultar_disponibilidad', {
+          content: '{"huecos":["hoy 4:00 p.m.","lunes 5:00 p.m."]}',
+        }),
+      ],
+      stateLines: [],
+    })
+    expect(v.ok).toBe(true)
+  })
+
+  it('la instrucción de reparación de repetición empuja a agendar_cita', () => {
+    const v = validateClinicalReply({
+      text: OFERTA,
+      traces: [
+        trace('consultar_disponibilidad', {
+          content: '{"huecos":["hoy 4:00 p.m.","lunes 5:00 p.m."]}',
+        }),
+      ],
+      stateLines: [],
+      lastAssistantText: OFERTA,
+    })
+    const note = buildGuardrailRepairNote(v, OFERTA)
+    expect(note).toContain('agendar_cita')
+    expect(note).toContain('repetía')
+  })
+
+  it('el fallback de una repetición pura es el genérico (no promete horarios)', () => {
+    const reply = buildClinicalFallbackReply({
+      ok: false,
+      reasons: ['repite el mensaje anterior'],
+      categories: ['repeticion'],
+    })
+    expect(reply).toContain('Gracias por escribirme')
+    // Y sigue pasando el propio guardrail, como todos los fallbacks.
+    const v = validateClinicalReply({ text: reply, traces: [], stateLines: [] })
+    expect(v.ok).toBe(true)
+  })
+})

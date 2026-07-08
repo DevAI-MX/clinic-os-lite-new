@@ -12,6 +12,7 @@
 //   Un humano confirma en el panel; ninguna herramienta lo hace.
 // ============================================================
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   APPOINTMENT_TYPES,
   LEAD_STAGES,
@@ -373,6 +374,37 @@ async function syncFunnelDeal(
   } catch {
     // best-effort — el embudo con tags sigue siendo la fuente de verdad.
   }
+}
+
+/**
+ * Avanza el deal del "Embudo IA" a la etapa "Agendado" cuando el
+ * EQUIPO confirma el anticipo en el panel (botón "Confirmar pago" /
+ * hoja de cita). Es el movimiento que el diseño del embudo siempre
+ * previó para ese hito (ver FUNNEL_STAGES) pero que nadie ejecutaba.
+ * Best-effort como todo el espejo visual: un tablero roto no debe
+ * tumbar la confirmación del pago.
+ */
+export async function advanceFunnelDealOnDepositConfirmed(args: {
+  db: SupabaseClient
+  accountId: string
+  contactId: string
+  conversationId: string | null
+  /** Usuario del panel que confirmó — dueño del deal si hay que crearlo. */
+  userId: string
+  contactName: string | null
+}): Promise<void> {
+  // syncFunnelDeal solo usa db/accountId/contactId/conversationId/
+  // userId/contactName del contexto; el resto del AgentToolContext
+  // (timezone, now, embeddingsApiKey) no participa en el embudo.
+  const ctx = {
+    db: args.db,
+    accountId: args.accountId,
+    contactId: args.contactId,
+    conversationId: args.conversationId,
+    userId: args.userId,
+    contactName: args.contactName,
+  } as AgentToolContext
+  await syncFunnelDeal(ctx, 'Agendado')
 }
 
 /** Cierra como perdido el deal del embudo (spam). Best-effort. */

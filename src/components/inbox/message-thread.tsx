@@ -32,7 +32,13 @@ import {
   Eraser,
   Trash2,
   AlertTriangle,
+  Banknote,
+  Loader2,
 } from "lucide-react";
+import {
+  confirmDepositRequest,
+  confirmDepositToast,
+} from "@/lib/clinic/confirm-deposit-client";
 import { format, isToday, isYesterday, differenceInHours } from "date-fns";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -221,6 +227,54 @@ export function MessageThread({
     }, 700);
   }, [isRefreshing, onRefresh]);
   const [replyTo, setReplyTo] = useState<ReplyDraft | null>(null);
+
+  // Cita de este contacto con anticipo por confirmar (habilita la
+  // acción "Confirmar pago de la cita" en el menú del hilo). El equipo
+  // valida el comprobante y con un clic: pago → confirmado, cita →
+  // confirmada, WhatsApp al paciente y Google Calendar.
+  const [pendingDepositApptId, setPendingDepositApptId] = useState<
+    string | null
+  >(null);
+  const [confirmingDeposit, setConfirmingDeposit] = useState(false);
+  useEffect(() => {
+    if (!contact?.id) {
+      setPendingDepositApptId(null);
+      return;
+    }
+    let cancelled = false;
+    const supabase = createClient();
+    supabase
+      .from("appointments")
+      .select("id")
+      .eq("contact_id", contact.id)
+      .eq("deposit_status", "pendiente")
+      .in("status", ["pendiente", "confirmada"])
+      .order("starts_at", { ascending: true })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!cancelled) setPendingDepositApptId(data?.id ?? null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contact?.id, resyncToken]);
+
+  const handleConfirmDeposit = useCallback(async () => {
+    if (!pendingDepositApptId || confirmingDeposit) return;
+    setConfirmingDeposit(true);
+    try {
+      const result = await confirmDepositRequest(pendingDepositApptId);
+      toast.success(confirmDepositToast(result.whatsapp));
+      setPendingDepositApptId(null);
+    } catch (err: unknown) {
+      toast.error(
+        err instanceof Error ? err.message : "No se pudo confirmar el pago",
+      );
+    } finally {
+      setConfirmingDeposit(false);
+    }
+  }, [pendingDepositApptId, confirmingDeposit]);
 
   // Profiles are bounded by RLS to rows the current user is allowed to
   // see — today that's just the current user, but the dropdown keeps the
@@ -1141,6 +1195,26 @@ export function MessageThread({
               <MoreVertical className="h-4 w-4" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="border-border bg-popover">
+              {/* Solo aparece cuando el contacto tiene una cita con
+                  anticipo por confirmar: el equipo valida el comprobante
+                  y confirma aquí (pago + cita + WhatsApp + Google). */}
+              {pendingDepositApptId && (
+                <>
+                  <DropdownMenuItem
+                    onClick={handleConfirmDeposit}
+                    disabled={confirmingDeposit}
+                    className="text-sm text-emerald-500 focus:text-emerald-500"
+                  >
+                    {confirmingDeposit ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Banknote className="mr-2 h-4 w-4" />
+                    )}
+                    Confirmar pago de la cita
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator className="bg-border" />
+                </>
+              )}
               <DropdownMenuItem onClick={handleDownloadJson} className="text-sm">
                 <Download className="mr-2 h-4 w-4" />
                 Descargar JSON

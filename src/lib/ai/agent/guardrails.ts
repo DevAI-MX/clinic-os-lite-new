@@ -22,8 +22,16 @@
 //   3. Confirmaciones prohibidas ("tu pago quedó confirmado", "ya
 //      quedó confirmada tu cita", "tu cita ya está en firme") →
 //      bloqueadas salvo que la BD diga que ese estado ES real (cita
-//      confirmada / anticipo pagado). La regla de oro: Sofía solo
-//      prevalida; confirma el equipo.
+//      confirmada / anticipo pagado) o que el EQUIPO HUMANO ya se lo
+//      haya afirmado al paciente por este chat (sender_type='agent',
+//      infalsificable por el paciente). La regla de oro: Sofía solo
+//      prevalida; confirma el equipo — pero cuando el equipo ya
+//      confirmó, contradecirlo es el error (incidente 2026-07-08).
+//   4. Anti-repetición → si la respuesta es (casi) idéntica al último
+//      mensaje que el paciente YA recibió, se bloquea: repetir el
+//      mensaje anterior significa que el modelo no atendió la
+//      respuesta del paciente (incidente 2026-07-08: re-envió la lista
+//      de horarios cuando el paciente ya había aceptado uno).
 //
 // Si bloquea, el caller NO envía y avisa al equipo — nunca silencio.
 // ============================================================
@@ -37,6 +45,19 @@ export interface ClinicalReplyGuardArgs {
   traces: ToolTrace[]
   /** Snapshot de BD inyectado al prompt (stateLines + flowLines). */
   stateLines: string[]
+  /**
+   * Mensajes recientes escritos por el EQUIPO HUMANO en este hilo
+   * (sender_type='agent' en BD — el paciente no puede forjarlos).
+   * Evidencia legítima: montos/horarios que el equipo ya le dijo al
+   * paciente, y confirmaciones de pago/cita que el equipo ya dio.
+   */
+  teamMessages?: string[]
+  /**
+   * Último mensaje que el paciente ya recibió de nosotros (bot o
+   * equipo) — alimenta el candado anti-repetición. null/ausente
+   * desactiva ese candado.
+   */
+  lastAssistantText?: string | null
 }
 
 /** Qué regla bloqueó — decide qué fallback de contención se manda. */
@@ -45,6 +66,7 @@ export type GuardrailBlockCategory =
   | 'horario'
   | 'pago_confirmado'
   | 'cita_confirmada'
+  | 'repeticion'
 
 export interface GuardrailVerdict {
   ok: boolean
@@ -87,6 +109,88 @@ const YA_QUEDO_PAGADO_RE = /\bya\s+qued[oó]\s+(?:pagad|validad|acreditad)/i
 // el sustantivo para elegir categoría.
 const CONFIRMACION_INVERTIDA_RE =
   /\b(?:ya\s+)?(?:qued[oó]|quedaron|est[aá]n?|fue(?:ron)?|han?\s+sido)\s+(?:confirmad|acreditad|validad|registrad|pagad)[oa]s?\s+(?:(?:el|la|los|las|tu|tus|su|sus|este|esta|ese|esa)\s+)?(pago|anticipo|transferencia|dep[oó]sito|cita)s?\b/i
+
+// ------------------------------------------------------------
+// Evidencia del equipo humano. Estos matchers corren SOLO sobre
+// mensajes con sender_type='agent' (una persona del panel), así que
+// son deliberadamente más laxos que los de bloqueo: un falso positivo
+// solo significa que a Sofía se le PERMITE repetir lo que el equipo ya
+// dijo — nunca que afirme algo que nadie dijo. Caso que los motivó
+// (2026-07-08): el equipo escribió "el pago se realizó correctamente,
+// te esperamos hoy a las 4pm" y el guardrail obligaba a la IA a
+// responder "sigue en revisión".
+// ------------------------------------------------------------
+
+/** El equipo afirmó que el pago quedó bien (sustantivo → verbo). */
+const TEAM_PAGO_CONFIRMADO_RE =
+  /\b(?:pago|anticipo|transferencia|dep[oó]sito|comprobante)\b[^.!?\n]{0,80}\b(?:confirmad[oa]s?|validad[oa]s?|acreditad[oa]s?|aprobad[oa]s?|verificad[oa]s?|registrad[oa]s?|correctamente|con\s+[eé]xito|exitos[oa]|se\s+realiz[oó]|realiz[oó]\s+correctamente|qued[oó]\s+pagad[oa]|listo)/i
+/** El equipo afirmó que el pago quedó bien (verbo → sustantivo). */
+const TEAM_PAGO_CONFIRMADO_INV_RE =
+  /\b(?:confirmamos|validamos|acreditamos|aprobamos|verificamos|ya\s+(?:confirm[eé]|valid[eé]|acredit[eé]|aprob[eé]))\b[^.!?\n]{0,40}\b(?:pago|anticipo|transferencia|dep[oó]sito|comprobante)\b/i
+/** El equipo dio la cita por confirmada / en firme / "te esperamos". */
+const TEAM_CITA_CONFIRMADA_RE =
+  /\bcita\b[^.!?\n]{0,80}\b(?:confirmad[oa]s?|agendad[oa]s?|apartad[oa]s?|lista|en\s+firme)|\bte\s+esperamos\b/i
+
+function teamConfirmedPayment(teamMessages: string[]): boolean {
+  return teamMessages.some(
+    (m) => TEAM_PAGO_CONFIRMADO_RE.test(m) || TEAM_PAGO_CONFIRMADO_INV_RE.test(m),
+  )
+}
+
+function teamConfirmedAppointment(teamMessages: string[]): boolean {
+  return teamMessages.some((m) => TEAM_CITA_CONFIRMADA_RE.test(m))
+}
+
+// ------------------------------------------------------------
+// Candado anti-repetición.
+// ------------------------------------------------------------
+
+/** Menos de esto (ya normalizado) no cuenta como repetición: cortesías
+ *  breves ("nos vemos", "con gusto") se repiten legítimamente. */
+const REPEAT_MIN_LENGTH = 25
+/** Similitud Jaccard (palabras) a partir de la cual dos mensajes
+ *  largos se consideran "el mismo mensaje". */
+const REPEAT_SIMILARITY = 0.9
+
+/** Minúsculas, sin acentos, sin signos/emoji, espacios colapsados. */
+function normalizeForRepeat(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function jaccardWords(a: string, b: string): number {
+  const setA = new Set(a.split(' '))
+  const setB = new Set(b.split(' '))
+  if (setA.size === 0 || setB.size === 0) return 0
+  let shared = 0
+  for (const w of setA) if (setB.has(w)) shared++
+  const union = setA.size + setB.size - shared
+  return union === 0 ? 0 : shared / union
+}
+
+/**
+ * ¿La respuesta re-envía (casi) el mismo mensaje que el paciente ya
+ * recibió? Igualdad normalizada o similitud de palabras muy alta con
+ * longitud comparable — conservador a propósito: el objetivo es cazar
+ * el "mismo mensaje otra vez", no penalizar fraseos parecidos.
+ */
+export function isNearDuplicateReply(
+  reply: string,
+  lastSent: string | null | undefined,
+): boolean {
+  if (!lastSent) return false
+  const a = normalizeForRepeat(reply)
+  const b = normalizeForRepeat(lastSent)
+  if (a.length < REPEAT_MIN_LENGTH || b.length < REPEAT_MIN_LENGTH) return false
+  if (a === b) return true
+  const ratio = a.length < b.length ? a.length / b.length : b.length / a.length
+  return ratio >= 0.8 && jaccardWords(a, b) >= REPEAT_SIMILARITY
+}
 
 /** "$1,500.00" / "1,500 pesos" → "1500" (forma canónica del monto). */
 function canonicalAmount(raw: string): string | null {
@@ -163,10 +267,15 @@ export function validateClinicalReply(
   if (!text.trim()) return { ok: true, reasons, categories }
 
   // Fuentes de evidencia del turno: lo que las tools DEVOLVIERON (una
-  // tool fallida no respalda nada) + el snapshot de BD del prompt.
+  // tool fallida no respalda nada) + el snapshot de BD del prompt + lo
+  // que el EQUIPO HUMANO ya le escribió al paciente por este hilo (un
+  // monto/horario que el equipo ya dijo es un hecho comunicado, no una
+  // alucinación del modelo).
+  const teamMessages = args.teamMessages ?? []
   const evidence = [
     ...args.traces.filter((t) => !t.isError).map((t) => t.content ?? ''),
     ...args.stateLines,
+    ...teamMessages,
   ]
   const snapshot = args.stateLines.join('\n')
 
@@ -197,14 +306,20 @@ export function validateClinicalReply(
     categories.push('horario')
   }
 
-  // 3) Confirmaciones que solo el equipo puede dar. La BD puede
-  // legitimarlas: cita realmente confirmada / anticipo realmente pagado.
+  // 3) Confirmaciones que solo el equipo puede dar. Dos fuentes las
+  // legitiman: la BD (cita realmente confirmada / anticipo realmente
+  // pagado) o el propio equipo, que ya se lo afirmó al paciente por
+  // este chat — obligar a la IA a "corregir" al equipo con un "sigue
+  // en revisión" es el bug, no el candado.
   const citaConfirmadaEnBd = /\bconfirmada\b/.test(snapshot)
   const anticipoPagadoEnBd = /anticipo\s*:?\s*pagado/i.test(snapshot)
+  const pagoConfirmadoPorEquipo = teamConfirmedPayment(teamMessages)
+  const citaConfirmadaPorEquipo = teamConfirmedAppointment(teamMessages)
   const invertida = text.match(CONFIRMACION_INVERTIDA_RE)
   const invertidaDeCita = invertida?.[1]?.toLowerCase() === 'cita'
   if (
     !anticipoPagadoEnBd &&
+    !pagoConfirmadoPorEquipo &&
     (PAGO_CONFIRMADO_RE.test(text) ||
       YA_QUEDO_PAGADO_RE.test(text) ||
       (invertida != null && !invertidaDeCita))
@@ -216,12 +331,25 @@ export function validateClinicalReply(
   }
   if (
     !citaConfirmadaEnBd &&
+    !citaConfirmadaPorEquipo &&
     (CITA_CONFIRMADA_RE.test(text) || (invertida != null && invertidaDeCita))
   ) {
     reasons.push(
       'afirma que la cita quedó confirmada — las citas las confirma el equipo en el panel',
     )
     categories.push('cita_confirmada')
+  }
+
+  // 4) Anti-repetición: re-enviar (casi) el mismo mensaje que el
+  // paciente acaba de recibir nunca es la respuesta correcta — el
+  // paciente respondió a ese mensaje y su respuesta es lo que hay que
+  // atender. (Si de verdad pidió que se lo repitieran, la ronda de
+  // reparación lo reformula y pasa.)
+  if (isNearDuplicateReply(text, args.lastAssistantText)) {
+    reasons.push(
+      'repite casi idéntico el mensaje anterior que el paciente ya recibió, en vez de atender su respuesta',
+    )
+    categories.push('repeticion')
   }
 
   return { ok: reasons.length === 0, reasons, categories }
@@ -296,6 +424,8 @@ const REPAIR_INSTRUCTION: Record<GuardrailBlockCategory, string> = {
     'Afirmaste que un pago quedó confirmado o registrado, y eso solo lo confirma el equipo en el panel: di que quedó EN REVISIÓN y que le confirmas por aquí en cuanto el equipo lo valide.',
   cita_confirmada:
     'Diste una cita por confirmada: una cita solo queda APARTADA cuando agendar_cita corre con éxito en este turno, y CONFIRMADA únicamente cuando el equipo valida el anticipo en el panel. Ajusta lo que dices a lo que tus herramientas de verdad hicieron.',
+  repeticion:
+    'Tu borrador repetía casi palabra por palabra tu mensaje anterior, que el paciente YA recibió y YA respondió. Relee su último mensaje y atiéndelo avanzando al siguiente paso: si estaba aceptando o eligiendo un horario ("para hoy a las 4", "sí, está bien"), llama agendar_cita AHORA MISMO con esa fecha y hora; no vuelvas a ofrecer los mismos horarios ni reenvíes el mismo texto. Solo si el paciente pidió explícitamente que le repitieras algo, dilo de nuevo pero con otras palabras.',
 }
 
 const REPAIR_GENERIC =

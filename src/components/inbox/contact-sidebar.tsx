@@ -3,8 +3,14 @@
 import { useState, useEffect, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
+import { useCan } from "@/hooks/use-can";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 import type { Contact, Deal, ContactNote, Tag } from "@/types";
+import {
+  confirmDepositRequest,
+  confirmDepositToast,
+} from "@/lib/clinic/confirm-deposit-client";
 import {
   Phone,
   Mail,
@@ -15,6 +21,8 @@ import {
   DollarSign,
   StickyNote,
   Plus,
+  Banknote,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -24,22 +32,36 @@ interface ContactSidebarProps {
   contact: Contact | null;
 }
 
+/** Cita con anticipo por confirmar — la tarjeta accionable del sidebar. */
+interface PendingDepositAppointment {
+  id: string;
+  starts_at: string;
+  status: string;
+  deposit_amount: number | null;
+  procedure: { name: string } | { name: string }[] | null;
+}
+
 export function ContactSidebar({ contact }: ContactSidebarProps) {
   const { accountId } = useAuth();
+  const canConfirmPayments = useCan("send-messages");
   const [copied, setCopied] = useState(false);
   const [deals, setDeals] = useState<Deal[]>([]);
   const [notes, setNotes] = useState<ContactNote[]>([]);
   const [tags, setTags] = useState<(Tag & { contact_tag_id: string })[]>([]);
   const [newNote, setNewNote] = useState("");
   const [addingNote, setAddingNote] = useState(false);
+  const [pendingDeposits, setPendingDeposits] = useState<
+    PendingDepositAppointment[]
+  >([]);
+  const [confirmingApptId, setConfirmingApptId] = useState<string | null>(null);
 
   const fetchContactData = useCallback(async () => {
     if (!contact) return;
 
     const supabase = createClient();
 
-    // Fetch deals, notes, and tags in parallel
-    const [dealsRes, notesRes, tagsRes] = await Promise.all([
+    // Fetch deals, notes, tags, and pending-deposit appointments in parallel
+    const [dealsRes, notesRes, tagsRes, depositsRes] = await Promise.all([
       supabase
         .from("deals")
         .select("*, stage:pipeline_stages(*)")
@@ -54,6 +76,13 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
         .from("contact_tags")
         .select("id, tag_id, tags(*)")
         .eq("contact_id", contact.id),
+      supabase
+        .from("appointments")
+        .select("id, starts_at, status, deposit_amount, procedure:procedures(name)")
+        .eq("contact_id", contact.id)
+        .eq("deposit_status", "pendiente")
+        .in("status", ["pendiente", "confirmada"])
+        .order("starts_at", { ascending: true }),
     ]);
 
     if (dealsRes.data) setDeals(dealsRes.data);
@@ -67,12 +96,37 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
         }));
       setTags(mapped);
     }
+    setPendingDeposits(
+      (depositsRes.data ?? []) as unknown as PendingDepositAppointment[],
+    );
   }, [contact]);
+
+  /**
+   * "Confirmar pago" (equipo médico, tras validar el comprobante):
+   * pago → confirmado, cita → confirmada, WhatsApp al paciente y
+   * sincronización a Google Calendar, todo en el servidor.
+   */
+  const handleConfirmDeposit = useCallback(
+    async (appointmentId: string) => {
+      setConfirmingApptId(appointmentId);
+      try {
+        const result = await confirmDepositRequest(appointmentId);
+        toast.success(confirmDepositToast(result.whatsapp));
+        fetchContactData();
+      } catch (err: unknown) {
+        toast.error(
+          err instanceof Error ? err.message : "No se pudo confirmar el pago",
+        );
+      } finally {
+        setConfirmingApptId(null);
+      }
+    },
+    [fetchContactData],
+  );
 
   // Load on contact change. setContactData/setTags run inside async
   // Supabase callbacks, not synchronously in the effect body.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchContactData();
   }, [fetchContactData]);
 
@@ -202,6 +256,62 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
               )}
             </div>
           </div>
+
+          {/* Pagos por confirmar — el equipo valida el comprobante y
+              confirma aquí: pago → confirmado, cita → confirmada,
+              WhatsApp al paciente y Google Calendar. */}
+          {canConfirmPayments && pendingDeposits.length > 0 && (
+            <>
+              <div className="my-4 border-t border-border" />
+              <div>
+                <div className="flex items-center gap-2 px-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  <Banknote className="h-3 w-3" />
+                  Pago por confirmar
+                </div>
+                <div className="mt-2 space-y-2">
+                  {pendingDeposits.map((appt) => {
+                    const proc = Array.isArray(appt.procedure)
+                      ? appt.procedure[0]
+                      : appt.procedure;
+                    return (
+                      <div
+                        key={appt.id}
+                        className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2"
+                      >
+                        <p className="text-sm font-medium text-foreground">
+                          {proc?.name ?? "Cita"}
+                        </p>
+                        <p className="nums mt-0.5 text-xs text-muted-foreground">
+                          {new Date(appt.starts_at).toLocaleString("es-MX", {
+                            weekday: "short",
+                            day: "numeric",
+                            month: "short",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                          {appt.deposit_amount != null &&
+                            ` · Anticipo $${Number(appt.deposit_amount).toLocaleString()}`}
+                        </p>
+                        <Button
+                          size="sm"
+                          className="mt-2 w-full"
+                          disabled={confirmingApptId !== null}
+                          onClick={() => handleConfirmDeposit(appt.id)}
+                        >
+                          {confirmingApptId === appt.id ? (
+                            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Banknote className="mr-1 h-3.5 w-3.5" />
+                          )}
+                          Confirmar pago
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
 
           {/* Divider */}
           <div className="my-4 border-t border-border" />

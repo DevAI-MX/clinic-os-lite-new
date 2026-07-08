@@ -13,6 +13,10 @@ import { useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { nudgeCalendarSync } from "@/lib/integrations/google/nudge-client";
+import {
+  confirmDepositRequest,
+  confirmDepositToast,
+} from "@/lib/clinic/confirm-deposit-client";
 import { toast } from "sonner";
 import {
   Sheet,
@@ -126,79 +130,20 @@ export function AppointmentSheet({
   }
 
   /**
-   * Confirma el anticipo: Payment → 'confirmado' (actualiza el
-   * prevalidado por la IA o crea uno nuevo), deposit_status='pagado' y
-   * la cita pendiente pasa a 'confirmada'.
+   * Confirma el anticipo vía POST /api/appointments/[id]/confirm-deposit
+   * (el mismo camino que el botón "Confirmar pago" del CRM y del
+   * inbox): Payment → 'confirmado', deposit_status='pagado', la cita
+   * pendiente pasa a 'confirmada', se avisa al paciente por WhatsApp,
+   * queda la notificación interna y Google Calendar se sincroniza en
+   * el servidor.
    */
   async function markDepositPaid() {
     if (!appointment) return;
     setPending("deposit");
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const user = session?.user;
-      if (!user) throw new Error("Sesión no válida");
-
-      const nowIso = new Date().toISOString();
-      const amount = Number(appointment.deposit_amount) || 0;
-
-      // ¿Ya existe un pago ligado a la cita (p. ej. prevalidado por la IA)?
-      const { data: existing, error: lookupError } = await supabase
-        .from("payments")
-        .select("id, status")
-        .eq("appointment_id", appointment.id)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (lookupError) throw lookupError;
-
-      if (existing) {
-        if (existing.status !== "confirmado") {
-          const { error } = await supabase
-            .from("payments")
-            .update({
-              status: "confirmado",
-              confirmed_by: user.id,
-              confirmed_at: nowIso,
-            })
-            .eq("id", existing.id);
-          if (error) throw error;
-        }
-      } else if (amount > 0) {
-        const { error } = await supabase.from("payments").insert({
-          account_id: appointment.account_id,
-          contact_id: appointment.contact_id,
-          appointment_id: appointment.id,
-          amount,
-          currency: appointment.procedure?.currency || CLINIC_CURRENCY,
-          method: "transferencia",
-          status: "confirmado",
-          concept: appointment.procedure
-            ? `Anticipo · ${appointment.procedure.name}`
-            : "Anticipo de cita",
-          confirmed_by: user.id,
-          confirmed_at: nowIso,
-        });
-        if (error) throw error;
-      }
-
-      const { error: apptError } = await supabase
-        .from("appointments")
-        .update({
-          deposit_status: "pagado",
-          // Solo sube pendiente → confirmada; no degrada una completada.
-          ...(appointment.status === "pendiente"
-            ? { status: "confirmada" }
-            : {}),
-        })
-        .eq("id", appointment.id);
-      if (apptError) throw apptError;
-
-      toast.success("Anticipo confirmado — cita confirmada");
+      const result = await confirmDepositRequest(appointment.id);
+      toast.success(confirmDepositToast(result.whatsapp));
       onChanged();
-      // La cita pasó a 'confirmada' (tentative → confirmed en Google).
-      nudgeCalendarSync();
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "No se pudo confirmar el anticipo";

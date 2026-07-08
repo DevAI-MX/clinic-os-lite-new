@@ -61,7 +61,13 @@ import {
   X,
   DollarSign,
   LayoutTemplate,
+  Banknote,
 } from 'lucide-react';
+import {
+  confirmDepositRequest,
+  confirmDepositToast,
+} from '@/lib/clinic/confirm-deposit-client';
+import { useCan } from '@/hooks/use-can';
 
 interface ContactDetailViewProps {
   open: boolean;
@@ -122,6 +128,9 @@ export function ContactDetailView({
   // su estado y el estado del anticipo.
   const [appointments, setAppointments] = useState<ContactAppointment[]>([]);
   const [loadingAppointments, setLoadingAppointments] = useState(false);
+  // Cita cuyo pago se está confirmando (spinner del botón).
+  const [confirmingApptId, setConfirmingApptId] = useState<string | null>(null);
+  const canConfirmPayments = useCan('send-messages');
 
   const fetchContact = useCallback(async () => {
     if (!contactId) return;
@@ -230,6 +239,28 @@ export function ContactDetailView({
       fetchAppointments();
     }
   }, [open, contactId, fetchContact, fetchTags, fetchNotes, fetchCustomFields, fetchDeals, fetchAppointments]);
+
+  /**
+   * Botón "Confirmar pago" (equipo médico, tras validar el comprobante):
+   * confirma el anticipo, la cita pasa a confirmada, el paciente recibe
+   * su confirmación por WhatsApp y Google Calendar se sincroniza — todo
+   * en el servidor (POST /api/appointments/[id]/confirm-deposit).
+   */
+  async function confirmAppointmentPayment(appointmentId: string) {
+    setConfirmingApptId(appointmentId);
+    try {
+      const result = await confirmDepositRequest(appointmentId);
+      toast.success(confirmDepositToast(result.whatsapp));
+      fetchAppointments();
+      fetchDeals();
+    } catch (err: unknown) {
+      toast.error(
+        err instanceof Error ? err.message : 'No se pudo confirmar el pago',
+      );
+    } finally {
+      setConfirmingApptId(null);
+    }
+  }
 
   async function copyPhone() {
     if (!contact) return;
@@ -811,6 +842,27 @@ export function ContactDetailView({
                               )}
                             </div>
                           )}
+                          {/* El equipo valida el comprobante y confirma
+                              aquí: pago → confirmado, cita → confirmada,
+                              WhatsApp al paciente y Google Calendar. */}
+                          {canConfirmPayments &&
+                            appt.deposit_status === 'pendiente' &&
+                            (appt.status === 'pendiente' ||
+                              appt.status === 'confirmada') && (
+                              <Button
+                                size="sm"
+                                className="mt-2 w-full"
+                                disabled={confirmingApptId !== null}
+                                onClick={() => confirmAppointmentPayment(appt.id)}
+                              >
+                                {confirmingApptId === appt.id ? (
+                                  <Loader2 className="mr-1 size-3.5 animate-spin" />
+                                ) : (
+                                  <Banknote className="mr-1 size-3.5" />
+                                )}
+                                Confirmar pago
+                              </Button>
+                            )}
                         </div>
                       );
                     })}

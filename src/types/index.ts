@@ -180,7 +180,11 @@ export type NotificationType =
   // anticipo o aparta una cita — siempre pendientes de un humano.
   | 'ai_escalation'
   | 'ai_deposit_prevalidated'
-  | 'ai_appointment_created';
+  | 'ai_appointment_created'
+  | 'ai_appointment_cancelled'
+  // El equipo confirmó un pago desde el panel (migración 048): la cita
+  // quedó confirmada y al paciente se le avisó por WhatsApp.
+  | 'deposit_confirmed';
 
 export interface Notification {
   id: string;

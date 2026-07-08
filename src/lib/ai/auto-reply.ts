@@ -1,7 +1,12 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabaseAdmin } from './admin-client'
 import { loadAiConfig } from './config'
-import { buildConversationContext } from './context'
+import {
+  buildConversationContext,
+  teamMessageTexts,
+  lastAssistantText,
+  TEAM_PREFIX,
+} from './context'
 import { retrieveKnowledge } from './knowledge'
 import { generateReply } from './generate'
 import {
@@ -160,14 +165,26 @@ export async function dispatchInboundToAiReply(
       .maybeSingle()
     if (freshErr || !fresh || fresh.assigned_agent_id || fresh.ai_autoreply_disabled) return
 
-    const messages = await buildConversationContext(db, conversationId)
+    // La rama clínica marca los mensajes del equipo humano con
+    // TEAM_PREFIX: el modelo distingue la voz del equipo de la suya (y
+    // no la contradice), y el guardrail los usa como evidencia.
+    const messages = await buildConversationContext(db, conversationId, undefined, {
+      markTeamMessages: config.clinicalAgentEnabled,
+    })
     if (messages.length === 0) return
 
     let text: string
     let handoff: boolean
     // Contexto para el guardrail determinista (solo rama clínica): las
-    // tools que corrieron + el snapshot de BD que respalda la respuesta.
-    let guardContext: { traces: ToolTrace[]; stateLines: string[] } | null = null
+    // tools que corrieron + el snapshot de BD que respalda la respuesta
+    // + los mensajes del equipo humano + el último mensaje ya enviado
+    // (candado anti-repetición).
+    let guardContext: {
+      traces: ToolTrace[]
+      stateLines: string[]
+      teamMessages: string[]
+      lastSentText: string | null
+    } | null = null
     // Re-corre el agente con una nota de corrección al final del hilo
     // (misma config y mismo contexto) — lo usa la ronda de reparación
     // cuando el guardrail bloquea. Solo la rama clínica lo define.
@@ -250,11 +267,13 @@ export async function dispatchInboundToAiReply(
         },
       }
       const result = await runClinicalAgent({ ...agentArgs, messages: agentMessages })
-      text = result.text
+      text = stripTeamPrefix(result.text)
       handoff = result.handoff
       guardContext = {
         traces: result.traces ?? [],
         stateLines: [...stateLines, ...flowLines],
+        teamMessages: teamMessageTexts(messages),
+        lastSentText: lastAssistantText(messages),
       }
       rerunWithNote = (note) =>
         runClinicalAgent({
@@ -320,6 +339,8 @@ export async function dispatchInboundToAiReply(
         text,
         traces: guardContext.traces,
         stateLines: guardContext.stateLines,
+        teamMessages: guardContext.teamMessages,
+        lastAssistantText: guardContext.lastSentText,
       })
       if (!verdict.ok && rerunWithNote) {
         console.error(
@@ -331,6 +352,8 @@ export async function dispatchInboundToAiReply(
           verdict,
           priorTraces: guardContext.traces,
           stateLines: guardContext.stateLines,
+          teamMessages: guardContext.teamMessages,
+          lastSentText: guardContext.lastSentText,
           logTag: 'ai auto-reply',
         })
         if (repair.ok) {
@@ -625,6 +648,10 @@ interface GuardrailRepairArgs {
    *  evidencia legítima del turno para validar la respuesta reparada. */
   priorTraces: ToolTrace[]
   stateLines: string[]
+  /** Mensajes del equipo humano — misma evidencia que en la primera pasada. */
+  teamMessages: string[]
+  /** Último mensaje ya enviado — el candado anti-repetición aplica igual. */
+  lastSentText: string | null
   logTag: string
 }
 
@@ -651,14 +678,17 @@ async function attemptGuardrailRepair(
       buildGuardrailRepairNote(args.verdict, args.blockedText),
     )
     if (second.handoff || !second.text) return { ok: false, verdict: args.verdict }
+    const repairedText = stripTeamPrefix(second.text)
     const verdict = validateClinicalReply({
-      text: second.text,
+      text: repairedText,
       traces: [...args.priorTraces, ...(second.traces ?? [])],
       stateLines: args.stateLines,
+      teamMessages: args.teamMessages,
+      lastAssistantText: args.lastSentText,
     })
     if (verdict.ok) {
       console.log(`[${args.logTag}] la ronda de corrección pasó el guardrail`)
-      return { ok: true, text: second.text }
+      return { ok: true, text: repairedText }
     }
     console.error(
       `[${args.logTag}] el reintento de corrección tampoco pasó: ${verdict.reasons.join('; ')}`,
@@ -678,7 +708,9 @@ async function attemptGuardrailRepair(
  */
 function agendaActionHint(verdict: GuardrailVerdict): string {
   const cats = verdict.categories ?? []
-  return cats.includes('horario') || cats.includes('cita_confirmada')
+  return cats.includes('horario') ||
+    cats.includes('cita_confirmada') ||
+    cats.includes('repeticion')
     ? ' Si el paciente estaba aceptando un horario, apártale tú la cita desde la agenda del panel.'
     : ''
 }
@@ -736,7 +768,12 @@ export async function dispatchAiResume(args: ResumeDispatchArgs): Promise<void> 
       .maybeSingle()
     if (freshErr || !fresh || fresh.assigned_agent_id || fresh.ai_autoreply_disabled) return
 
-    const messages = await buildConversationContext(db, conversationId)
+    const messages = await buildConversationContext(db, conversationId, undefined, {
+      // El retome existe justo porque el equipo estuvo escribiendo:
+      // marca sus mensajes para que el modelo no los confunda con los
+      // suyos ni los contradiga.
+      markTeamMessages: true,
+    })
     // Sin mensajes del paciente no hay nada que retomar.
     if (!messages.some((m) => m.role === 'user')) return
 
@@ -825,11 +862,15 @@ export async function dispatchAiResume(args: ResumeDispatchArgs): Promise<void> 
     // respuesta inmediata; un "lo reviso con el equipo" automático
     // justo después de que el equipo atendió confunde más de lo que
     // contiene. Basta el aviso para que lo retome una persona.
-    let replyText = result.text
+    const resumeTeamMessages = teamMessageTexts(messages)
+    const resumeLastSent = lastAssistantText(messages)
+    let replyText = stripTeamPrefix(result.text)
     let verdict = validateClinicalReply({
       text: replyText,
       traces: result.traces ?? [],
       stateLines: [...stateLines, ...flowLines],
+      teamMessages: resumeTeamMessages,
+      lastAssistantText: resumeLastSent,
     })
     if (!verdict.ok) {
       console.error(
@@ -845,6 +886,8 @@ export async function dispatchAiResume(args: ResumeDispatchArgs): Promise<void> 
         verdict,
         priorTraces: result.traces ?? [],
         stateLines: [...stateLines, ...flowLines],
+        teamMessages: resumeTeamMessages,
+        lastSentText: resumeLastSent,
         logTag: 'ai resume',
       })
       if (repair.ok) {
@@ -910,6 +953,23 @@ export async function dispatchAiResume(args: ResumeDispatchArgs): Promise<void> 
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * El transcript del agente marca los mensajes del equipo humano con
+ * TEAM_PREFIX. Si el modelo imita el marcador en SU respuesta, se
+ * limpia antes de validar/enviar — es notación interna del hilo, el
+ * paciente jamás debe verla.
+ */
+function stripTeamPrefix(text: string): string {
+  const prefix = TEAM_PREFIX.trim()
+  return text
+    .split('\n')
+    .map((line) => (line.trimStart().startsWith(prefix)
+      ? line.trimStart().slice(prefix.length).trimStart()
+      : line))
+    .join('\n')
+    .trim()
 }
 
 interface NotifyArgs {
