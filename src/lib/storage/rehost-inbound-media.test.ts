@@ -6,6 +6,14 @@ import { rehostInboundMedia } from './rehost-inbound-media'
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0])
 // Bytes sin firma reconocible.
 const PLAIN_BYTES = new Uint8Array([0x01, 0x02, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 0])
+// MP4 (ISO base media): tamaño de caja + "ftyp" + brand "isom".
+const MP4_BYTES = new Uint8Array([
+  0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d,
+])
+// 3GP: mismo contenedor, brand "3gp5".
+const THREE_GP_BYTES = new Uint8Array([
+  0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x33, 0x67, 0x70, 0x35,
+])
 
 /** Respuesta mínima con la superficie que usa rehostInboundMedia —
  *  evita las semánticas de Response (p.ej. content-length calculado). */
@@ -82,6 +90,41 @@ describe('rehostInboundMedia', () => {
     expect(url).toBe(
       `https://supa.example/storage/v1/object/public/chat-media/${uploads[0].path}`,
     )
+  })
+
+  it('olfatea video/mp4 por la caja ftyp cuando el CDN declara octet-stream', async () => {
+    // Caso real: el CDN de Zernio/Meta suele declarar octet-stream para
+    // video — sin este sniff el rehost fallaba en silencio y el panel
+    // se quedaba con la URL efímera (recuadro gris tras expirar).
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        fakeResponse({ bytes: MP4_BYTES, contentType: 'application/octet-stream' }),
+      ),
+    )
+    const { db, uploads } = fakeDb()
+
+    const url = await rehostInboundMedia({ db, ...baseArgs })
+
+    expect(uploads[0].path).toMatch(/\.mp4$/)
+    expect(uploads[0].options.contentType).toBe('video/mp4')
+    expect(url).not.toBeNull()
+  })
+
+  it('olfatea video/3gpp cuando el brand de la caja ftyp es 3gp', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        fakeResponse({ bytes: THREE_GP_BYTES, contentType: 'application/octet-stream' }),
+      ),
+    )
+    const { db, uploads } = fakeDb()
+
+    const url = await rehostInboundMedia({ db, ...baseArgs })
+
+    expect(uploads[0].path).toMatch(/\.3gp$/)
+    expect(uploads[0].options.contentType).toBe('video/3gpp')
+    expect(url).not.toBeNull()
   })
 
   it('acepta un mime declarado del allow-list cuando no hay firma mágica', async () => {

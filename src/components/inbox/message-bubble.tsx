@@ -53,12 +53,22 @@ function MediaUnavailable({ label }: { label: string }) {
   );
 }
 
-function MediaImage({ url, alt }: { url: string; alt: string }) {
+/**
+ * Resolves a message's `media_url` into something a browser element can
+ * actually load. Proxy URLs (`/api/whatsapp/media/...`, the Meta-direct
+ * pipeline) need an authenticated `fetch` turned into a `blob:` URL —
+ * a bare `src` attribute won't carry the session the route checks for.
+ * Anything else (Supabase Storage public URLs, the common case since
+ * Zernio attachments get rehosted there) is used as-is. Shared by
+ * image/video/audio so all three get the same loading + error-state
+ * behavior instead of each reinventing it.
+ */
+function useMediaSrc(url: string) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const loadImage = useCallback(async () => {
+  const load = useCallback(async () => {
     if (!url) return;
 
     // Proxy URLs need auth fetch to create blob URL
@@ -67,8 +77,7 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
         const res = await fetch(url);
         if (!res.ok) throw new Error("Failed to load media");
         const blob = await res.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        setSrc(blobUrl);
+        setSrc(URL.createObjectURL(blob));
       } catch {
         setError(true);
       } finally {
@@ -81,14 +90,31 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
   }, [url]);
 
   useEffect(() => {
-    loadImage();
+    load();
     return () => {
-      if (src?.startsWith("blob:")) {
-        URL.revokeObjectURL(src);
-      }
+      // Functional form so this reads the LATEST src at unmount time,
+      // not the one captured when the effect was set up (which is
+      // always null — load() hasn't resolved yet at that point).
+      setSrc((current) => {
+        if (current?.startsWith("blob:")) URL.revokeObjectURL(current);
+        return current;
+      });
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadImage]);
+  }, [load]);
+
+  return { src, error, loading, setError };
+}
+
+function MediaSpinner() {
+  return (
+    <div className="flex h-40 w-60 items-center justify-center rounded-lg bg-muted">
+      <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+    </div>
+  );
+}
+
+function MediaImage({ url, alt }: { url: string; alt: string }) {
+  const { src, error, loading, setError } = useMediaSrc(url);
 
   if (error) {
     return (
@@ -98,19 +124,52 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
     );
   }
 
-  if (loading) {
-    return (
-      <div className="flex h-40 w-60 items-center justify-center rounded-lg bg-muted">
-        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-      </div>
-    );
-  }
+  if (loading) return <MediaSpinner />;
 
   return (
     <img
       src={src ?? ""}
       alt={alt}
       className="max-h-64 max-w-60 rounded-lg object-cover"
+      onError={() => setError(true)}
+    />
+  );
+}
+
+function MediaVideo({ url }: { url: string }) {
+  const { src, error, loading, setError } = useMediaSrc(url);
+
+  if (error) return <MediaUnavailable label="Video" />;
+  if (loading) return <MediaSpinner />;
+
+  return (
+    <video
+      src={src ?? ""}
+      controls
+      className="max-h-64 max-w-60 rounded-lg"
+      onError={() => setError(true)}
+    />
+  );
+}
+
+function MediaAudio({ url }: { url: string }) {
+  const { src, error, loading, setError } = useMediaSrc(url);
+
+  if (error) return <MediaUnavailable label="Audio" />;
+  if (loading) {
+    return (
+      <div className="flex h-10 w-60 items-center justify-center rounded-lg bg-muted">
+        <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    );
+  }
+
+  return (
+    <audio
+      src={src ?? ""}
+      controls
+      preload="metadata"
+      className="max-w-60"
       onError={() => setError(true)}
     />
   );
@@ -145,11 +204,7 @@ function MessageContent({ message }: { message: Message }) {
       return (
         <div>
           {message.media_url ? (
-            <video
-              src={message.media_url}
-              controls
-              className="max-h-64 max-w-60 rounded-lg"
-            />
+            <MediaVideo url={message.media_url} />
           ) : (
             <MediaUnavailable label="Video" />
           )}
@@ -165,7 +220,7 @@ function MessageContent({ message }: { message: Message }) {
       return (
         <div>
           {message.media_url ? (
-            <audio src={message.media_url} controls className="max-w-60" />
+            <MediaAudio url={message.media_url} />
           ) : (
             <MediaUnavailable label="Audio" />
           )}

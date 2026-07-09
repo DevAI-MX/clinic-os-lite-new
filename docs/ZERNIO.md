@@ -121,5 +121,8 @@ npm run dev
   una cuenta wacrm (`ZERNIO_WACRM_ACCOUNT_ID` o la primera `whatsapp_config`).
 - Los mensajes interactivos (botones/listas) y el reply-quoting no tienen
   mapeo en Zernio: se envían como texto/plano.
-- Media entrante usa la URL de Zernio directo (puede expirar en archivos
-  hospedados por Meta).
+- Media entrante se re-hospeda en el bucket `chat-media` antes de
+  guardar `media_url` (ver `src/lib/storage/rehost-inbound-media.ts`),
+  así que el panel no depende de la URL efímera de Zernio/Meta. Si el
+  re-hospedaje falla (mime no reconocido, CDN caído) se conserva la
+  URL original como mejor esfuerzo, que sí puede expirar.

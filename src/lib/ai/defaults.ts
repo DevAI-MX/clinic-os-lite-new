@@ -30,6 +30,8 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const DEFAULT_CONTEXT_MESSAGE_LIMIT = 40
 const DEFAULT_DEBOUNCE_WINDOW_MS = 9_000
 const DEFAULT_DEBOUNCE_MAX_WAIT_MS = 40_000
+const DEFAULT_RUN_LOCK_POLL_MS = 750
+const DEFAULT_RUN_LOCK_STALE_AFTER_SECONDS = 180
 
 /** Per-call provider timeout. Override with `AI_REQUEST_TIMEOUT_MS`. */
 export function aiRequestTimeoutMs(): number {
@@ -52,6 +54,25 @@ export function aiDebounceWindowMs(): number {
 export function aiDebounceMaxWaitMs(): number {
   const raw = Number(process.env.AI_DEBOUNCE_MAX_WAIT_MS)
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_DEBOUNCE_MAX_WAIT_MS
+}
+
+/** How often to re-poll the per-conversation run-lock while waiting for
+ *  a prior burst's agent run to finish (see `debounceAndClaim` in
+ *  `auto-reply.ts`). Override with `AI_RUN_LOCK_POLL_MS` (tests set
+ *  this low so the wait doesn't slow down the suite). */
+export function aiRunLockPollMs(): number {
+  const raw = Number(process.env.AI_RUN_LOCK_POLL_MS)
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_RUN_LOCK_POLL_MS
+}
+
+/** How old a held run-lock has to be before a new run is allowed to
+ *  steal it — recovers from an invocation that crashed (timeout/OOM)
+ *  without releasing. Override with `AI_RUN_LOCK_STALE_SECONDS`. */
+export function aiRunLockStaleAfterSeconds(): number {
+  const raw = Number(process.env.AI_RUN_LOCK_STALE_SECONDS)
+  return Number.isFinite(raw) && raw > 0
+    ? raw
+    : DEFAULT_RUN_LOCK_STALE_AFTER_SECONDS
 }
 
 /** How many recent text messages to feed the model. Override with

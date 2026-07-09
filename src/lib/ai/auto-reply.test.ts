@@ -23,6 +23,11 @@ const h = vi.hoisted(() => ({
     updatePayload: null as Record<string, unknown> | null,
     rpcCalls: [] as { name: string; args: unknown }[],
     dispatchDueAt: null as string | null,
+    // Candado de corrida (acquire_ai_dispatch_run_lock): cola de
+    // resultados a devolver en llamadas sucesivas (default: siempre
+    // true, es decir "sin contención").
+    runLockQueue: [] as boolean[],
+    runLockReleases: 0,
     // Avisos al equipo (retireConversationToHumans).
     notifications: [] as Record<string, unknown>[],
     // messages table (Zernio branch): rows the echo-relabel UPDATE
@@ -215,6 +220,15 @@ vi.mock('./admin-client', () => ({
         if (won) h.state.dispatchDueAt = null
         return Promise.resolve({ data: won, error: null })
       }
+      if (name === 'acquire_ai_dispatch_run_lock') {
+        const next =
+          h.state.runLockQueue.length > 0 ? h.state.runLockQueue.shift() : true
+        return Promise.resolve({ data: next, error: null })
+      }
+      if (name === 'release_ai_dispatch_run_lock') {
+        h.state.runLockReleases += 1
+        return Promise.resolve({ data: null, error: null })
+      }
       if (h.state.claimError) {
         return Promise.resolve({ data: null, error: h.state.claimError })
       }
@@ -259,6 +273,8 @@ beforeEach(() => {
   h.state.updatePayload = null
   h.state.rpcCalls = []
   h.state.dispatchDueAt = null
+  h.state.runLockQueue = []
+  h.state.runLockReleases = 0
   h.state.notifications = []
   h.state.messagesDeletes = 0
   // Debounce is off by default in these tests — see the dedicated
@@ -470,6 +486,61 @@ describe('dispatchInboundToAiReply — debounce', () => {
     expect(h.engineSendText).toHaveBeenCalledTimes(1)
     await dispatchInboundToAiReply(ARGS)
     expect(h.engineSendText).toHaveBeenCalledTimes(2)
+  })
+
+  // Incidente Acerotech (2026-07-08): dos ráfagas separadas por más de
+  // la ventana de debounce, pero superpuestas en el tiempo porque la
+  // primera corrida del agente seguía viva, ganaron cada una su propio
+  // claim y mandaron — cada una por su cuenta — el bloque de datos
+  // bancarios (contradictorio: dos días distintos, 0.5s de diferencia).
+  // El candado de corrida (acquire/release_ai_dispatch_run_lock,
+  // migración 049) es lo que ahora impide que esto se repita.
+  describe('candado de corrida (evita el envío duplicado de Acerotech)', () => {
+    beforeEach(() => {
+      process.env.AI_RUN_LOCK_POLL_MS = '10'
+    })
+
+    it('libera el candado de corrida tras un envío exitoso', async () => {
+      await dispatchInboundToAiReply(ARGS)
+      expect(h.state.rpcCalls).toContainEqual({
+        name: 'release_ai_dispatch_run_lock',
+        args: { conversation_id: 'conv-1' },
+      })
+      expect(h.state.runLockReleases).toBe(1)
+    })
+
+    it('espera a que una corrida anterior libere el candado antes de mandar — nunca dos envíos', async () => {
+      // Dos intentos de acquire fallan (una corrida anterior lo tiene
+      // tomado) antes de que el tercero lo consiga.
+      h.state.runLockQueue = [false, false, true]
+      await dispatchInboundToAiReply(ARGS)
+      expect(h.engineSendText).toHaveBeenCalledTimes(1)
+      expect(h.state.runLockQueue).toHaveLength(0) // se consumió esperando
+    })
+
+    it('si el candado nunca se libera dentro del plazo, no manda (nunca corre en paralelo)', async () => {
+      // Ventana de debounce normal (30ms) + margen para varios polls
+      // del candado de corrida (10ms c/u) antes de que expire el plazo.
+      process.env.AI_DEBOUNCE_MAX_WAIT_MS = '100'
+      // El acquire nunca gana — simula una corrida anterior que no suelta.
+      h.state.runLockQueue = Array(50).fill(false)
+      await dispatchInboundToAiReply(ARGS)
+      expect(h.engineSendText).not.toHaveBeenCalled()
+      // Nunca llegó a mandar, así que tampoco intenta liberar un candado
+      // que nunca tomó.
+      expect(h.state.runLockReleases).toBe(0)
+    })
+
+    it('libera el candado incluso si el envío falla (finally)', async () => {
+      h.engineSendText.mockRejectedValue(new Error('zernio down'))
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        await dispatchInboundToAiReply(ARGS)
+      } finally {
+        errSpy.mockRestore()
+      }
+      expect(h.state.runLockReleases).toBe(1)
+    })
   })
 })
 
@@ -1046,6 +1117,21 @@ describe('dispatchAiResume — retome al reactivar el modo IA', () => {
     expect(h.engineSendText).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: 'conv-1', text: 'Hola!' }),
     )
+  })
+
+  // Comparte debounceAndClaim/acquireRunLock con dispatchInboundToAiReply
+  // (mismo candado de corrida, migración 049) — este caso concreto ya se
+  // rompió una vez al refactorizar (el retome no llamaba al release, así
+  // que el candado se quedaba tomado hasta que expiraba por antigüedad).
+  it('libera el candado de corrida tras el retome (mismo mecanismo que el inbound)', async () => {
+    const prevWindow = process.env.AI_DEBOUNCE_WINDOW_MS
+    process.env.AI_DEBOUNCE_WINDOW_MS = '10'
+    try {
+      await dispatchAiResume(ARGS)
+      expect(h.state.runLockReleases).toBe(1)
+    } finally {
+      process.env.AI_DEBOUNCE_WINDOW_MS = prevWindow
+    }
   })
 
   it('handoff = "nada que retomar": no envía y NO avisa al equipo', async () => {

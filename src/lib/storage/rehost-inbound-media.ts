@@ -78,6 +78,16 @@ function sniffMime(bytes: Uint8Array): string | null {
   ) {
     return 'image/webp'
   }
+  // MP4/3GP (ISO base media): caja "ftyp" en el offset 4 — el
+  // contenedor en el que siempre llegan los videos de WhatsApp. Sin
+  // este caso el sniff nunca reconocía video (el CDN suele declarar
+  // Content-Type: application/octet-stream), el rehost fallaba en
+  // silencio y el panel quedaba con la URL efímera de Zernio, rota en
+  // cuanto expiraba.
+  if (bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) {
+    const brand = String.fromCharCode(bytes[8], bytes[9], bytes[10])
+    return brand === '3gp' ? 'video/3gpp' : 'video/mp4'
+  }
   return null
 }
 

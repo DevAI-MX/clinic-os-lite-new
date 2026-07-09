@@ -13,6 +13,8 @@ import {
   buildSystemPrompt,
   aiDebounceWindowMs,
   aiDebounceMaxWaitMs,
+  aiRunLockPollMs,
+  aiRunLockStaleAfterSeconds,
   HANDOFF_SENTINEL,
 } from './defaults'
 import { latestUserMessage } from './query'
@@ -152,308 +154,316 @@ export async function dispatchInboundToAiReply(
     // Debounce: if the patient is mid-burst (several messages in a row),
     // wait for it to go quiet so we answer once, coherently, instead of
     // once per message. Only the invocation that "wins" the burst
-    // continues past this point.
-    const wonDispatch = await debounceAndClaim(db, conversationId)
-    if (!wonDispatch) return
-
-    // The thread may have changed hands (or been switched off) while we
-    // were waiting out the burst — re-check before doing any real work.
-    const { data: fresh, error: freshErr } = await db
-      .from('conversations')
-      .select('assigned_agent_id, ai_autoreply_disabled')
-      .eq('id', conversationId)
-      .maybeSingle()
-    if (freshErr || !fresh || fresh.assigned_agent_id || fresh.ai_autoreply_disabled) return
-
-    // La rama clínica marca los mensajes del equipo humano con
-    // TEAM_PREFIX: el modelo distingue la voz del equipo de la suya (y
-    // no la contradice), y el guardrail los usa como evidencia.
-    const messages = await buildConversationContext(db, conversationId, undefined, {
-      markTeamMessages: config.clinicalAgentEnabled,
-    })
-    if (messages.length === 0) return
-
-    let text: string
-    let handoff: boolean
-    // Contexto para el guardrail determinista (solo rama clínica): las
-    // tools que corrieron + el snapshot de BD que respalda la respuesta
-    // + los mensajes del equipo humano + el último mensaje ya enviado
-    // (candado anti-repetición).
-    let guardContext: {
-      traces: ToolTrace[]
-      stateLines: string[]
-      teamMessages: string[]
-      lastSentText: string | null
-    } | null = null
-    // Re-corre el agente con una nota de corrección al final del hilo
-    // (misma config y mismo contexto) — lo usa la ronda de reparación
-    // cuando el guardrail bloquea. Solo la rama clínica lo define.
-    let rerunWithNote: ((note: string) => Promise<RunClinicalAgentResult>) | null =
-      null
-
-    if (config.clinicalAgentEnabled) {
-      // clinicOS: agente de Atención con herramientas clínicas (catálogo,
-      // agenda, anticipos) en vez de una sola completación. Corre con
-      // Anthropic u OpenAI (tool-calling). Se apoya en las tools para los
-      // hechos, así que no consulta la KB semántica.
-      const { data: contact } = await db
-        .from('contacts')
-        .select('name')
-        .eq('id', contactId)
+    // continues past this point — and it also holds the run-lock for
+    // the conversation (see debounceAndClaim), so a second burst that
+    // starts while this one is still running the agent waits its turn
+    // instead of racing it (incidente Acerotech: dos ráfagas separadas
+    // por más de la ventana de debounce, pero superpuestas en el
+    // tiempo, mandaron cada una su propio bloque de datos bancarios).
+    const releaseRunLock = await debounceAndClaim(db, conversationId)
+    if (!releaseRunLock) return
+    try {
+      // The thread may have changed hands (or been switched off) while we
+      // were waiting out the burst — re-check before doing any real work.
+      const { data: fresh, error: freshErr } = await db
+        .from('conversations')
+        .select('assigned_agent_id, ai_autoreply_disabled')
+        .eq('id', conversationId)
         .maybeSingle()
-      const contactName = (contact?.name as string | null) ?? null
-      const timezone = clinicTimezone()
-      const now = new Date()
+      if (freshErr || !fresh || fresh.assigned_agent_id || fresh.ai_autoreply_disabled) return
 
-      // Estado REAL del paciente (cita apartada, anticipo en revisión)
-      // leído de la BD: las corridas no heredan los tool_results de
-      // corridas previas y sin esto el modelo contradice o re-pregunta
-      // lo que él mismo ya agendó. El checklist del flujo de recepción
-      // (5 pasos) le marca además en qué paso va — no repite ni salta.
-      const [stateLines, flowLines] = await Promise.all([
-        buildPatientStateLines({ db, accountId, contactId, timezone, now }),
-        buildReceptionFlowLines({
-          db,
-          accountId,
-          contactId,
-          contactName,
-          timezone,
-          now,
-        }),
-      ])
-
-      // Imágenes de la ráfaga actual (p. ej. el comprobante del
-      // anticipo): el transcript solo trae marcadores de texto, así que
-      // un paso de visión extrae los datos y se inyectan como nota del
-      // sistema al final del hilo. Best-effort: sin imágenes (o si la
-      // visión falla) la corrida sigue igual.
-      const imageNotes = await buildRecentImageNotes({
-        db,
-        conversationId,
-        provider: config.provider,
-        apiKey: config.apiKey,
-        model: config.model,
-        now,
+      // La rama clínica marca los mensajes del equipo humano con
+      // TEAM_PREFIX: el modelo distingue la voz del equipo de la suya (y
+      // no la contradice), y el guardrail los usa como evidencia.
+      const messages = await buildConversationContext(db, conversationId, undefined, {
+        markTeamMessages: config.clinicalAgentEnabled,
       })
-      const agentMessages =
-        imageNotes.length > 0
-          ? [...messages, { role: 'user' as const, content: imageNotes.join('\n\n') }]
-          : messages
+      if (messages.length === 0) return
 
-      const systemPrompt = buildClinicalSystemPrompt({
-        userPrompt: config.systemPrompt,
-        contactName,
-        timezone,
-        now,
-        stateLines,
-        flowLines,
-      })
+      let text: string
+      let handoff: boolean
+      // Contexto para el guardrail determinista (solo rama clínica): las
+      // tools que corrieron + el snapshot de BD que respalda la respuesta
+      // + los mensajes del equipo humano + el último mensaje ya enviado
+      // (candado anti-repetición).
+      let guardContext: {
+        traces: ToolTrace[]
+        stateLines: string[]
+        teamMessages: string[]
+        lastSentText: string | null
+      } | null = null
+      // Re-corre el agente con una nota de corrección al final del hilo
+      // (misma config y mismo contexto) — lo usa la ronda de reparación
+      // cuando el guardrail bloquea. Solo la rama clínica lo define.
+      let rerunWithNote: ((note: string) => Promise<RunClinicalAgentResult>) | null =
+        null
 
-      const agentArgs = {
-        provider: config.provider,
-        apiKey: config.apiKey,
-        model: config.model,
-        systemPrompt,
-        ctx: {
+      if (config.clinicalAgentEnabled) {
+        // clinicOS: agente de Atención con herramientas clínicas (catálogo,
+        // agenda, anticipos) en vez de una sola completación. Corre con
+        // Anthropic u OpenAI (tool-calling). Se apoya en las tools para los
+        // hechos, así que no consulta la KB semántica.
+        const { data: contact } = await db
+          .from('contacts')
+          .select('name')
+          .eq('id', contactId)
+          .maybeSingle()
+        const contactName = (contact?.name as string | null) ?? null
+        const timezone = clinicTimezone()
+        const now = new Date()
+
+        // Estado REAL del paciente (cita apartada, anticipo en revisión)
+        // leído de la BD: las corridas no heredan los tool_results de
+        // corridas previas y sin esto el modelo contradice o re-pregunta
+        // lo que él mismo ya agendó. El checklist del flujo de recepción
+        // (5 pasos) le marca además en qué paso va — no repite ni salta.
+        const [stateLines, flowLines] = await Promise.all([
+          buildPatientStateLines({ db, accountId, contactId, timezone, now }),
+          buildReceptionFlowLines({
+            db,
+            accountId,
+            contactId,
+            contactName,
+            timezone,
+            now,
+          }),
+        ])
+
+        // Imágenes de la ráfaga actual (p. ej. el comprobante del
+        // anticipo): el transcript solo trae marcadores de texto, así que
+        // un paso de visión extrae los datos y se inyectan como nota del
+        // sistema al final del hilo. Best-effort: sin imágenes (o si la
+        // visión falla) la corrida sigue igual.
+        const imageNotes = await buildRecentImageNotes({
           db,
-          accountId,
-          contactId,
           conversationId,
-          userId: configOwnerUserId,
+          provider: config.provider,
+          apiKey: config.apiKey,
+          model: config.model,
+          now,
+        })
+        const agentMessages =
+          imageNotes.length > 0
+            ? [...messages, { role: 'user' as const, content: imageNotes.join('\n\n') }]
+            : messages
+
+        const systemPrompt = buildClinicalSystemPrompt({
+          userPrompt: config.systemPrompt,
           contactName,
           timezone,
           now,
-          embeddingsApiKey: config.embeddingsApiKey,
-        },
-      }
-      const result = await runClinicalAgent({ ...agentArgs, messages: agentMessages })
-      text = stripTeamPrefix(result.text)
-      handoff = result.handoff
-      guardContext = {
-        traces: result.traces ?? [],
-        stateLines: [...stateLines, ...flowLines],
-        teamMessages: teamMessageTexts(messages),
-        lastSentText: lastAssistantText(messages),
-      }
-      rerunWithNote = (note) =>
-        runClinicalAgent({
-          ...agentArgs,
-          messages: [...agentMessages, { role: 'user' as const, content: note }],
+          stateLines,
+          flowLines,
         })
-    } else {
-      // Ground the reply in the account's knowledge base (best-effort).
-      const knowledge = await retrieveKnowledge(
-        db,
-        accountId,
-        config,
-        latestUserMessage(messages),
-      )
 
-      const systemPrompt = buildSystemPrompt({
-        userPrompt: config.systemPrompt,
-        mode: 'auto_reply',
-        knowledge,
-      })
-
-      const gen = await generateReply({ config, systemPrompt, messages })
-      text = gen.text
-      handoff = gen.handoff
-    }
-
-    if (handoff || !text) {
-      // The model can't (or shouldn't) answer — this inbound stays
-      // unanswered and the team gets a notice (sin notificación, el
-      // paciente quedaba esperando sin que nadie supiera que el hilo
-      // era suyo). El modo IA queda intacto: el siguiente mensaje
-      // vuelve a intentarse en automático.
-      await notifyTeamOnce(db, {
-        accountId,
-        conversationId,
-        contactId,
-        configOwnerUserId,
-        title: 'El agente pasó una conversación al equipo',
-        body: 'escribió algo que el agente prefirió no responder en automático. Respóndele tú desde el panel.',
-      })
-      return
-    }
-
-    // Guardrail determinista (rama clínica): la respuesta debe estar
-    // respaldada por las tools del turno o por el snapshot de BD. Si no
-    // pasa, el texto inseguro NO se envía. Antes de rendirse, UNA ronda
-    // de auto-reparación: se re-corre el agente con la nota de qué se
-    // bloqueó y por qué — el caso típico (Acerotech) es que el modelo
-    // "narró" un agendado sin llamar agendar_cita, y con la nota la
-    // segunda pasada sí lo ejecuta (lo que además desbloquea el mensaje
-    // del anticipo, que viene en el resultado de esa tool). La salida
-    // reparada pasa por el MISMO guardrail; ningún candado se debilita.
-    // Si tampoco pasa, el paciente no se queda en visto: sale el
-    // fallback neutro de contención (sin precios, sin horarios, sin
-    // confirmar nada) que respeta el mismo gate humano y el mismo claim
-    // de slot que cualquier envío. El equipo recibe el aviso con el
-    // motivo y con qué pasó con el fallback; el modo IA queda intacto
-    // (el siguiente inbound se reintenta normal). El texto inseguro no
-    // viaja en el aviso (puede traer datos del paciente) — solo los
-    // motivos, que no llevan PII.
-    if (guardContext) {
-      let verdict = validateClinicalReply({
-        text,
-        traces: guardContext.traces,
-        stateLines: guardContext.stateLines,
-        teamMessages: guardContext.teamMessages,
-        lastAssistantText: guardContext.lastSentText,
-      })
-      if (!verdict.ok && rerunWithNote) {
-        console.error(
-          `[ai auto-reply] guardrail bloqueó la respuesta: ${verdict.reasons.join('; ')} — reintentando con nota de corrección`,
-        )
-        const repair = await attemptGuardrailRepair({
-          rerun: rerunWithNote,
-          blockedText: text,
-          verdict,
-          priorTraces: guardContext.traces,
-          stateLines: guardContext.stateLines,
-          teamMessages: guardContext.teamMessages,
-          lastSentText: guardContext.lastSentText,
-          logTag: 'ai auto-reply',
-        })
-        if (repair.ok) {
-          text = repair.text
-          verdict = { ok: true, reasons: [] }
-        } else {
-          verdict = repair.verdict
+        const agentArgs = {
+          provider: config.provider,
+          apiKey: config.apiKey,
+          model: config.model,
+          systemPrompt,
+          ctx: {
+            db,
+            accountId,
+            contactId,
+            conversationId,
+            userId: configOwnerUserId,
+            contactName,
+            timezone,
+            now,
+            embeddingsApiKey: config.embeddingsApiKey,
+          },
         }
-      }
-      if (!verdict.ok) {
-        const fallbackOutcome = await sendSafeFallback(db, {
+        const result = await runClinicalAgent({ ...agentArgs, messages: agentMessages })
+        text = stripTeamPrefix(result.text)
+        handoff = result.handoff
+        guardContext = {
+          traces: result.traces ?? [],
+          stateLines: [...stateLines, ...flowLines],
+          teamMessages: teamMessageTexts(messages),
+          lastSentText: lastAssistantText(messages),
+        }
+        rerunWithNote = (note) =>
+          runClinicalAgent({
+            ...agentArgs,
+            messages: [...agentMessages, { role: 'user' as const, content: note }],
+          })
+      } else {
+        // Ground the reply in the account's knowledge base (best-effort).
+        const knowledge = await retrieveKnowledge(
+          db,
           accountId,
-          conversationId,
-          contactId,
-          configOwnerUserId,
-          zernioConversationId,
-          text: buildClinicalFallbackReply(verdict),
-          maxReplies: config.autoReplyMaxPerConversation,
+          config,
+          latestUserMessage(messages),
+        )
+
+        const systemPrompt = buildSystemPrompt({
+          userPrompt: config.systemPrompt,
+          mode: 'auto_reply',
+          knowledge,
         })
+
+        const gen = await generateReply({ config, systemPrompt, messages })
+        text = gen.text
+        handoff = gen.handoff
+      }
+
+      if (handoff || !text) {
+        // The model can't (or shouldn't) answer — this inbound stays
+        // unanswered and the team gets a notice (sin notificación, el
+        // paciente quedaba esperando sin que nadie supiera que el hilo
+        // era suyo). El modo IA queda intacto: el siguiente mensaje
+        // vuelve a intentarse en automático.
         await notifyTeamOnce(db, {
           accountId,
           conversationId,
           contactId,
           configOwnerUserId,
-          title: 'El agente generó una respuesta insegura',
-          body: `escribió y el agente generó una respuesta que no pasó las validaciones (${verdict.reasons.join('; ')}), ni siquiera tras el reintento automático de corrección. ${FALLBACK_NOTICE[fallbackOutcome]}${agendaActionHint(verdict)}`,
+          title: 'El agente pasó una conversación al equipo',
+          body: 'escribió algo que el agente prefirió no responder en automático. Respóndele tú desde el panel.',
         })
         return
       }
-    }
 
-    // El modo pudo cambiar mientras el modelo generaba (una corrida
-    // tarda varios segundos): si un humano tomó el hilo o lo puso en
-    // modo humano durante ese lapso, el mensaje ya no debe salir.
-    const { data: gate, error: gateErr } = await db
-      .from('conversations')
-      .select('assigned_agent_id, ai_autoreply_disabled')
-      .eq('id', conversationId)
-      .maybeSingle()
-    if (gateErr || !gate || gate.assigned_agent_id || gate.ai_autoreply_disabled) {
-      return
-    }
+      // Guardrail determinista (rama clínica): la respuesta debe estar
+      // respaldada por las tools del turno o por el snapshot de BD. Si no
+      // pasa, el texto inseguro NO se envía. Antes de rendirse, UNA ronda
+      // de auto-reparación: se re-corre el agente con la nota de qué se
+      // bloqueó y por qué — el caso típico (Acerotech) es que el modelo
+      // "narró" un agendado sin llamar agendar_cita, y con la nota la
+      // segunda pasada sí lo ejecuta (lo que además desbloquea el mensaje
+      // del anticipo, que viene en el resultado de esa tool). La salida
+      // reparada pasa por el MISMO guardrail; ningún candado se debilita.
+      // Si tampoco pasa, el paciente no se queda en visto: sale el
+      // fallback neutro de contención (sin precios, sin horarios, sin
+      // confirmar nada) que respeta el mismo gate humano y el mismo claim
+      // de slot que cualquier envío. El equipo recibe el aviso con el
+      // motivo y con qué pasó con el fallback; el modo IA queda intacto
+      // (el siguiente inbound se reintenta normal). El texto inseguro no
+      // viaja en el aviso (puede traer datos del paciente) — solo los
+      // motivos, que no llevan PII.
+      if (guardContext) {
+        let verdict = validateClinicalReply({
+          text,
+          traces: guardContext.traces,
+          stateLines: guardContext.stateLines,
+          teamMessages: guardContext.teamMessages,
+          lastAssistantText: guardContext.lastSentText,
+        })
+        if (!verdict.ok && rerunWithNote) {
+          console.error(
+            `[ai auto-reply] guardrail bloqueó la respuesta: ${verdict.reasons.join('; ')} — reintentando con nota de corrección`,
+          )
+          const repair = await attemptGuardrailRepair({
+            rerun: rerunWithNote,
+            blockedText: text,
+            verdict,
+            priorTraces: guardContext.traces,
+            stateLines: guardContext.stateLines,
+            teamMessages: guardContext.teamMessages,
+            lastSentText: guardContext.lastSentText,
+            logTag: 'ai auto-reply',
+          })
+          if (repair.ok) {
+            text = repair.text
+            verdict = { ok: true, reasons: [] }
+          } else {
+            verdict = repair.verdict
+          }
+        }
+        if (!verdict.ok) {
+          const fallbackOutcome = await sendSafeFallback(db, {
+            accountId,
+            conversationId,
+            contactId,
+            configOwnerUserId,
+            zernioConversationId,
+            text: buildClinicalFallbackReply(verdict),
+            maxReplies: config.autoReplyMaxPerConversation,
+          })
+          await notifyTeamOnce(db, {
+            accountId,
+            conversationId,
+            contactId,
+            configOwnerUserId,
+            title: 'El agente generó una respuesta insegura',
+            body: `escribió y el agente generó una respuesta que no pasó las validaciones (${verdict.reasons.join('; ')}), ni siquiera tras el reintento automático de corrección. ${FALLBACK_NOTICE[fallbackOutcome]}${agendaActionHint(verdict)}`,
+          })
+          return
+        }
+      }
 
-    // Atomically claim a reply slot: the cap check + increment happen in
-    // one UPDATE, so concurrent inbounds can never overshoot the cap. If
-    // another inbound just took the last slot, `claimed` is false and we
-    // skip the send. (We consume a slot slightly before the send lands —
-    // fail-safe: under-reply rather than over-reply.)
-    // Con tope 0 (sin tope) el claim sigue corriendo — mantiene el
-    // contador ai_reply_count para métricas — pero contra un máximo
-    // que nunca se alcanza (int4 máximo de Postgres).
-    const { data: claimed, error: claimErr } = await db.rpc(
-      'claim_ai_reply_slot',
-      {
-        conversation_id: conversationId,
-        max_replies:
-          config.autoReplyMaxPerConversation > 0
-            ? config.autoReplyMaxPerConversation
-            : 2147483647,
-      },
-    )
-    if (claimErr) return
-    if (claimed !== true) {
-      // Un inbound concurrente tomó el último slot: mismo tratamiento
-      // que el tope — aviso al equipo, nunca silencio, modo IA intacto.
-      await notifyTeamOnce(db, {
-        accountId,
-        conversationId,
-        contactId,
-        configOwnerUserId,
-        title: 'El agente llegó a su tope de respuestas',
-        body: 'sigue escribiendo, pero el agente alcanzó el máximo de respuestas automáticas de esta conversación y dejará de contestar aquí. Respóndele tú o ajusta el tope en la configuración de IA.',
-      })
-      return
-    }
+      // El modo pudo cambiar mientras el modelo generaba (una corrida
+      // tarda varios segundos): si un humano tomó el hilo o lo puso en
+      // modo humano durante ese lapso, el mensaje ya no debe salir.
+      const { data: gate, error: gateErr } = await db
+        .from('conversations')
+        .select('assigned_agent_id, ai_autoreply_disabled')
+        .eq('id', conversationId)
+        .maybeSingle()
+      if (gateErr || !gate || gate.assigned_agent_id || gate.ai_autoreply_disabled) {
+        return
+      }
 
-    try {
-      await sendAgentReply(db, {
-        accountId,
-        conversationId,
-        contactId,
-        configOwnerUserId,
-        zernioConversationId,
-        text,
-      })
-    } catch (sendErr) {
-      // El envío falló (API key de Zernio revocada, Meta caído, red…):
-      // el agente ya "respondió" pero el paciente no recibió nada. La
-      // lección Acerotech aplicada a la capa de transporte: nunca
-      // silencio — el equipo recibe un aviso para tomar el hilo.
-      console.error('[ai auto-reply] outbound send failed:', sendErr)
-      await notifyTeamOnce(db, {
-        accountId,
-        conversationId,
-        contactId,
-        configOwnerUserId,
-        title: 'No se pudo enviar la respuesta del agente',
-        body: 'escribió y el agente generó su respuesta, pero el envío por WhatsApp falló. Revisa la conexión con Zernio (API key / suscripción) y respóndele tú desde el panel.',
-      })
-      return
+      // Atomically claim a reply slot: the cap check + increment happen in
+      // one UPDATE, so concurrent inbounds can never overshoot the cap. If
+      // another inbound just took the last slot, `claimed` is false and we
+      // skip the send. (We consume a slot slightly before the send lands —
+      // fail-safe: under-reply rather than over-reply.)
+      // Con tope 0 (sin tope) el claim sigue corriendo — mantiene el
+      // contador ai_reply_count para métricas — pero contra un máximo
+      // que nunca se alcanza (int4 máximo de Postgres).
+      const { data: claimed, error: claimErr } = await db.rpc(
+        'claim_ai_reply_slot',
+        {
+          conversation_id: conversationId,
+          max_replies:
+            config.autoReplyMaxPerConversation > 0
+              ? config.autoReplyMaxPerConversation
+              : 2147483647,
+        },
+      )
+      if (claimErr) return
+      if (claimed !== true) {
+        // Un inbound concurrente tomó el último slot: mismo tratamiento
+        // que el tope — aviso al equipo, nunca silencio, modo IA intacto.
+        await notifyTeamOnce(db, {
+          accountId,
+          conversationId,
+          contactId,
+          configOwnerUserId,
+          title: 'El agente llegó a su tope de respuestas',
+          body: 'sigue escribiendo, pero el agente alcanzó el máximo de respuestas automáticas de esta conversación y dejará de contestar aquí. Respóndele tú o ajusta el tope en la configuración de IA.',
+        })
+        return
+      }
+
+      try {
+        await sendAgentReply(db, {
+          accountId,
+          conversationId,
+          contactId,
+          configOwnerUserId,
+          zernioConversationId,
+          text,
+        })
+      } catch (sendErr) {
+        // El envío falló (API key de Zernio revocada, Meta caído, red…):
+        // el agente ya "respondió" pero el paciente no recibió nada. La
+        // lección Acerotech aplicada a la capa de transporte: nunca
+        // silencio — el equipo recibe un aviso para tomar el hilo.
+        console.error('[ai auto-reply] outbound send failed:', sendErr)
+        await notifyTeamOnce(db, {
+          accountId,
+          conversationId,
+          contactId,
+          configOwnerUserId,
+          title: 'No se pudo enviar la respuesta del agente',
+          body: 'escribió y el agente generó su respuesta, pero el envío por WhatsApp falló. Revisa la conexión con Zernio (API key / suscripción) y respóndele tú desde el panel.',
+        })
+        return
+      }
+    } finally {
+      await releaseRunLock()
     }
   } catch (err) {
     console.error('[ai auto-reply] dispatch failed:', err)
@@ -758,193 +768,196 @@ export async function dispatchAiResume(args: ResumeDispatchArgs): Promise<void> 
     if (convErr || !conv) return
     if (conv.assigned_agent_id || conv.ai_autoreply_disabled) return
 
-    const wonDispatch = await debounceAndClaim(db, conversationId)
-    if (!wonDispatch) return
+    const releaseRunLock = await debounceAndClaim(db, conversationId)
+    if (!releaseRunLock) return
+    try {
+      const { data: fresh, error: freshErr } = await db
+        .from('conversations')
+        .select('assigned_agent_id, ai_autoreply_disabled')
+        .eq('id', conversationId)
+        .maybeSingle()
+      if (freshErr || !fresh || fresh.assigned_agent_id || fresh.ai_autoreply_disabled) return
 
-    const { data: fresh, error: freshErr } = await db
-      .from('conversations')
-      .select('assigned_agent_id, ai_autoreply_disabled')
-      .eq('id', conversationId)
-      .maybeSingle()
-    if (freshErr || !fresh || fresh.assigned_agent_id || fresh.ai_autoreply_disabled) return
+      const messages = await buildConversationContext(db, conversationId, undefined, {
+        // El retome existe justo porque el equipo estuvo escribiendo:
+        // marca sus mensajes para que el modelo no los confunda con los
+        // suyos ni los contradiga.
+        markTeamMessages: true,
+      })
+      // Sin mensajes del paciente no hay nada que retomar.
+      if (!messages.some((m) => m.role === 'user')) return
 
-    const messages = await buildConversationContext(db, conversationId, undefined, {
-      // El retome existe justo porque el equipo estuvo escribiendo:
-      // marca sus mensajes para que el modelo no los confunda con los
-      // suyos ni los contradiga.
-      markTeamMessages: true,
-    })
-    // Sin mensajes del paciente no hay nada que retomar.
-    if (!messages.some((m) => m.role === 'user')) return
+      const { data: contact } = await db
+        .from('contacts')
+        .select('name')
+        .eq('id', contactId)
+        .maybeSingle()
+      const contactName = (contact?.name as string | null) ?? null
+      const timezone = clinicTimezone()
+      const now = new Date()
 
-    const { data: contact } = await db
-      .from('contacts')
-      .select('name')
-      .eq('id', contactId)
-      .maybeSingle()
-    const contactName = (contact?.name as string | null) ?? null
-    const timezone = clinicTimezone()
-    const now = new Date()
+      const [stateLines, flowLines] = await Promise.all([
+        buildPatientStateLines({ db, accountId, contactId, timezone, now }),
+        buildReceptionFlowLines({
+          db,
+          accountId,
+          contactId,
+          contactName,
+          timezone,
+          now,
+        }),
+      ])
 
-    const [stateLines, flowLines] = await Promise.all([
-      buildPatientStateLines({ db, accountId, contactId, timezone, now }),
-      buildReceptionFlowLines({
+      // Una imagen sin atender (p. ej. un comprobante que llegó justo
+      // antes de pasar a modo humano) también cuenta como pendiente: el
+      // paso de visión la describe igual que en el flujo normal.
+      const imageNotes = await buildRecentImageNotes({
         db,
-        accountId,
-        contactId,
-        contactName,
-        timezone,
-        now,
-      }),
-    ])
-
-    // Una imagen sin atender (p. ej. un comprobante que llegó justo
-    // antes de pasar a modo humano) también cuenta como pendiente: el
-    // paso de visión la describe igual que en el flujo normal.
-    const imageNotes = await buildRecentImageNotes({
-      db,
-      conversationId,
-      provider: config.provider,
-      apiKey: config.apiKey,
-      model: config.model,
-      now,
-    })
-
-    const resumeNote = `[Nota automática del sistema — el paciente NO escribió esto: la conversación estuvo en MODO HUMANO (la atendió el equipo desde el panel) y acaban de reactivar el modo IA. Relee los últimos mensajes del hilo — sobre todo los 3 más recientes, que pueden incluir respuestas escritas por el equipo. Si el último mensaje del paciente quedó sin respuesta o quedó un pendiente abierto (una duda a medias, un pago por confirmar, una cita sin cerrar), retómalo AHORA con un solo mensaje breve y cálido que continúe lo que el equipo ya le dijo — sin contradecirlo, sin repetir lo que ya le respondieron y sin saludar como si fuera una conversación nueva. Si no hay nada pendiente que retomar, responde exactamente ${HANDOFF_SENTINEL} y nada más: es una señal interna y al paciente no le llegará nada.]`
-
-    const agentMessages = [
-      ...messages,
-      ...(imageNotes.length > 0
-        ? [{ role: 'user' as const, content: imageNotes.join('\n\n') }]
-        : []),
-      { role: 'user' as const, content: resumeNote },
-    ]
-
-    const systemPrompt = buildClinicalSystemPrompt({
-      userPrompt: config.systemPrompt,
-      contactName,
-      timezone,
-      now,
-      stateLines,
-      flowLines,
-    })
-
-    const agentArgs = {
-      provider: config.provider,
-      apiKey: config.apiKey,
-      model: config.model,
-      systemPrompt,
-      ctx: {
-        db,
-        accountId,
-        contactId,
         conversationId,
-        userId: configOwnerUserId,
+        provider: config.provider,
+        apiKey: config.apiKey,
+        model: config.model,
+        now,
+      })
+
+      const resumeNote = `[Nota automática del sistema — el paciente NO escribió esto: la conversación estuvo en MODO HUMANO (la atendió el equipo desde el panel) y acaban de reactivar el modo IA. Relee los últimos mensajes del hilo — sobre todo los 3 más recientes, que pueden incluir respuestas escritas por el equipo. Si el último mensaje del paciente quedó sin respuesta o quedó un pendiente abierto (una duda a medias, un pago por confirmar, una cita sin cerrar), retómalo AHORA con un solo mensaje breve y cálido que continúe lo que el equipo ya le dijo — sin contradecirlo, sin repetir lo que ya le respondieron y sin saludar como si fuera una conversación nueva. Si no hay nada pendiente que retomar, responde exactamente ${HANDOFF_SENTINEL} y nada más: es una señal interna y al paciente no le llegará nada.]`
+
+      const agentMessages = [
+        ...messages,
+        ...(imageNotes.length > 0
+          ? [{ role: 'user' as const, content: imageNotes.join('\n\n') }]
+          : []),
+        { role: 'user' as const, content: resumeNote },
+      ]
+
+      const systemPrompt = buildClinicalSystemPrompt({
+        userPrompt: config.systemPrompt,
         contactName,
         timezone,
         now,
-        embeddingsApiKey: config.embeddingsApiKey,
-      },
-    }
-    const result = await runClinicalAgent({ ...agentArgs, messages: agentMessages })
+        stateLines,
+        flowLines,
+      })
 
-    // Handoff aquí significa "nada que retomar": descarte silencioso.
-    if (result.handoff || !result.text) return
+      const agentArgs = {
+        provider: config.provider,
+        apiKey: config.apiKey,
+        model: config.model,
+        systemPrompt,
+        ctx: {
+          db,
+          accountId,
+          contactId,
+          conversationId,
+          userId: configOwnerUserId,
+          contactName,
+          timezone,
+          now,
+          embeddingsApiKey: config.embeddingsApiKey,
+        },
+      }
+      const result = await runClinicalAgent({ ...agentArgs, messages: agentMessages })
 
-    // Mismo guardrail que el inbound, con la misma ronda de reparación:
-    // un retome sin respaldo tampoco sale — y si tampoco la segunda
-    // pasada lo respalda, aquí sí se avisa (a diferencia del handoff
-    // silencioso, esto es una respuesta insegura, no una salida feliz).
-    //
-    // Decisión deliberada: en el retome NO se manda el fallback de
-    // contención. Quien reactivó la IA acaba de estar en el hilo desde
-    // el panel y no hay un mensaje nuevo del paciente esperando
-    // respuesta inmediata; un "lo reviso con el equipo" automático
-    // justo después de que el equipo atendió confunde más de lo que
-    // contiene. Basta el aviso para que lo retome una persona.
-    const resumeTeamMessages = teamMessageTexts(messages)
-    const resumeLastSent = lastAssistantText(messages)
-    let replyText = stripTeamPrefix(result.text)
-    let verdict = validateClinicalReply({
-      text: replyText,
-      traces: result.traces ?? [],
-      stateLines: [...stateLines, ...flowLines],
-      teamMessages: resumeTeamMessages,
-      lastAssistantText: resumeLastSent,
-    })
-    if (!verdict.ok) {
-      console.error(
-        `[ai resume] guardrail bloqueó la respuesta: ${verdict.reasons.join('; ')} — reintentando con nota de corrección`,
-      )
-      const repair = await attemptGuardrailRepair({
-        rerun: (note) =>
-          runClinicalAgent({
-            ...agentArgs,
-            messages: [...agentMessages, { role: 'user' as const, content: note }],
-          }),
-        blockedText: replyText,
-        verdict,
-        priorTraces: result.traces ?? [],
+      // Handoff aquí significa "nada que retomar": descarte silencioso.
+      if (result.handoff || !result.text) return
+
+      // Mismo guardrail que el inbound, con la misma ronda de reparación:
+      // un retome sin respaldo tampoco sale — y si tampoco la segunda
+      // pasada lo respalda, aquí sí se avisa (a diferencia del handoff
+      // silencioso, esto es una respuesta insegura, no una salida feliz).
+      //
+      // Decisión deliberada: en el retome NO se manda el fallback de
+      // contención. Quien reactivó la IA acaba de estar en el hilo desde
+      // el panel y no hay un mensaje nuevo del paciente esperando
+      // respuesta inmediata; un "lo reviso con el equipo" automático
+      // justo después de que el equipo atendió confunde más de lo que
+      // contiene. Basta el aviso para que lo retome una persona.
+      const resumeTeamMessages = teamMessageTexts(messages)
+      const resumeLastSent = lastAssistantText(messages)
+      let replyText = stripTeamPrefix(result.text)
+      let verdict = validateClinicalReply({
+        text: replyText,
+        traces: result.traces ?? [],
         stateLines: [...stateLines, ...flowLines],
         teamMessages: resumeTeamMessages,
-        lastSentText: resumeLastSent,
-        logTag: 'ai resume',
+        lastAssistantText: resumeLastSent,
       })
-      if (repair.ok) {
-        replyText = repair.text
-        verdict = { ok: true, reasons: [] }
-      } else {
-        verdict = repair.verdict
+      if (!verdict.ok) {
+        console.error(
+          `[ai resume] guardrail bloqueó la respuesta: ${verdict.reasons.join('; ')} — reintentando con nota de corrección`,
+        )
+        const repair = await attemptGuardrailRepair({
+          rerun: (note) =>
+            runClinicalAgent({
+              ...agentArgs,
+              messages: [...agentMessages, { role: 'user' as const, content: note }],
+            }),
+          blockedText: replyText,
+          verdict,
+          priorTraces: result.traces ?? [],
+          stateLines: [...stateLines, ...flowLines],
+          teamMessages: resumeTeamMessages,
+          lastSentText: resumeLastSent,
+          logTag: 'ai resume',
+        })
+        if (repair.ok) {
+          replyText = repair.text
+          verdict = { ok: true, reasons: [] }
+        } else {
+          verdict = repair.verdict
+        }
       }
-    }
-    if (!verdict.ok) {
-      await notifyTeamOnce(db, {
-        accountId,
-        conversationId,
-        contactId,
-        configOwnerUserId,
-        title: 'El agente generó una respuesta insegura',
-        body: `tenía un pendiente al reactivar el modo IA, pero la respuesta del agente no pasó las validaciones (${verdict.reasons.join('; ')}), ni siquiera tras el reintento automático de corrección. No se le envió nada — acabas de tener el hilo en el panel; retómalo tú directamente.`,
-      })
-      return
-    }
+      if (!verdict.ok) {
+        await notifyTeamOnce(db, {
+          accountId,
+          conversationId,
+          contactId,
+          configOwnerUserId,
+          title: 'El agente generó una respuesta insegura',
+          body: `tenía un pendiente al reactivar el modo IA, pero la respuesta del agente no pasó las validaciones (${verdict.reasons.join('; ')}), ni siquiera tras el reintento automático de corrección. No se le envió nada — acabas de tener el hilo en el panel; retómalo tú directamente.`,
+        })
+        return
+      }
 
-    // El modo pudo volver a cambiar mientras el modelo generaba.
-    const { data: gate, error: gateErr } = await db
-      .from('conversations')
-      .select('assigned_agent_id, ai_autoreply_disabled')
-      .eq('id', conversationId)
-      .maybeSingle()
-    if (gateErr || !gate || gate.assigned_agent_id || gate.ai_autoreply_disabled) return
+      // El modo pudo volver a cambiar mientras el modelo generaba.
+      const { data: gate, error: gateErr } = await db
+        .from('conversations')
+        .select('assigned_agent_id, ai_autoreply_disabled')
+        .eq('id', conversationId)
+        .maybeSingle()
+      if (gateErr || !gate || gate.assigned_agent_id || gate.ai_autoreply_disabled) return
 
-    const { data: claimed, error: claimErr } = await db.rpc('claim_ai_reply_slot', {
-      conversation_id: conversationId,
-      max_replies:
-        config.autoReplyMaxPerConversation > 0
-          ? config.autoReplyMaxPerConversation
-          : 2147483647,
-    })
-    if (claimErr || claimed !== true) return
+      const { data: claimed, error: claimErr } = await db.rpc('claim_ai_reply_slot', {
+        conversation_id: conversationId,
+        max_replies:
+          config.autoReplyMaxPerConversation > 0
+            ? config.autoReplyMaxPerConversation
+            : 2147483647,
+      })
+      if (claimErr || claimed !== true) return
 
-    try {
-      await sendAgentReply(db, {
-        accountId,
-        conversationId,
-        contactId,
-        configOwnerUserId,
-        zernioConversationId,
-        text: replyText,
-      })
-    } catch (sendErr) {
-      console.error('[ai resume] outbound send failed:', sendErr)
-      await notifyTeamOnce(db, {
-        accountId,
-        conversationId,
-        contactId,
-        configOwnerUserId,
-        title: 'No se pudo enviar la respuesta del agente',
-        body: 'tenía un pendiente y el agente intentó retomarlo al reactivar el modo IA, pero el envío por WhatsApp falló. Revisa la conexión con Zernio (API key / suscripción) y respóndele tú desde el panel.',
-      })
+      try {
+        await sendAgentReply(db, {
+          accountId,
+          conversationId,
+          contactId,
+          configOwnerUserId,
+          zernioConversationId,
+          text: replyText,
+        })
+      } catch (sendErr) {
+        console.error('[ai resume] outbound send failed:', sendErr)
+        await notifyTeamOnce(db, {
+          accountId,
+          conversationId,
+          contactId,
+          configOwnerUserId,
+          title: 'No se pudo enviar la respuesta del agente',
+          body: 'tenía un pendiente y el agente intentó retomarlo al reactivar el modo IA, pero el envío por WhatsApp falló. Revisa la conexión con Zernio (API key / suscripción) y respóndele tú desde el panel.',
+        })
+      }
+    } finally {
+      await releaseRunLock()
     }
   } catch (err) {
     console.error('[ai resume] dispatch failed:', err)
@@ -1034,18 +1047,33 @@ async function notifyTeamOnce(db: SupabaseClient, args: NotifyArgs): Promise<voi
  * to hand this off to. Once the window has genuinely elapsed without
  * being pushed further, it atomically claims the dispatch via
  * `claim_ai_dispatch_slot` (compare-and-swap, mirrors
- * `claim_ai_reply_slot`). Exactly one invocation per burst gets `true`;
- * the rest see the column change or clear underneath them and stand
- * down. `buildConversationContext` rereads the full recent transcript
- * regardless of which message triggered it, so the single winning
- * dispatch already answers the whole accumulated burst.
+ * `claim_ai_reply_slot`). Exactly one invocation per burst gets past
+ * that claim; the rest see the column change or clear underneath them
+ * and stand down. `buildConversationContext` rereads the full recent
+ * transcript regardless of which message triggered it, so the single
+ * winning dispatch already answers the whole accumulated burst.
+ *
+ * The debounce window only groups messages that arrive close together
+ * — it does NOT by itself stop a burst that starts *after* a PREVIOUS
+ * burst's agent run is still executing (LLM + tool calls + a possible
+ * guardrail repair round can easily outlast the ~9s window). Left
+ * unguarded, that produces two concurrent, independent agent runs for
+ * the same conversation — each reasoning from its own stale snapshot
+ * of the transcript (incidente Acerotech, 2026-07-08: two overlapping
+ * runs both booked the deposit step and both sent the bank-account
+ * block, one for "miércoles" and one for "jueves", 0.5s apart). So
+ * after winning the burst claim, this also acquires a run-lock
+ * (`acquire_ai_dispatch_run_lock`, migración 049) that spans the
+ * entire run — waiting out any still-running prior burst first. On
+ * success, returns a release callback the caller MUST invoke (in a
+ * `finally`) once the run ends, success or failure.
  */
 async function debounceAndClaim(
   db: SupabaseClient,
   conversationId: string,
-): Promise<boolean> {
+): Promise<(() => Promise<void>) | false> {
   const windowMs = aiDebounceWindowMs()
-  if (windowMs <= 0) return true // disabled (e.g. AI_DEBOUNCE_WINDOW_MS=0 in tests)
+  if (windowMs <= 0) return async () => {} // disabled (e.g. AI_DEBOUNCE_WINDOW_MS=0 in tests)
 
   const dueAt = new Date(Date.now() + windowMs)
   const { data: sched, error: schedErr } = await db
@@ -1078,5 +1106,42 @@ async function debounceAndClaim(
     conversation_id: conversationId,
     expected_due_at: new Date(observed).toISOString(),
   })
-  return !claimErr && claimed === true
+  if (claimErr || claimed !== true) return false
+
+  return acquireRunLock(db, conversationId, deadline)
+}
+
+/**
+ * Waits (bounded by `deadline`, the same ceiling the debounce wait
+ * already used) for any prior still-running dispatch on this
+ * conversation to release its lock, then claims it. Returns a release
+ * callback on success, or `false` if the deadline passed first — in
+ * that rare case this burst is dropped rather than risking a second
+ * concurrent run (see debounceAndClaim's doc comment).
+ */
+async function acquireRunLock(
+  db: SupabaseClient,
+  conversationId: string,
+  deadline: number,
+): Promise<(() => Promise<void>) | false> {
+  while (true) {
+    const { data: acquired, error } = await db.rpc('acquire_ai_dispatch_run_lock', {
+      conversation_id: conversationId,
+      stale_after_seconds: aiRunLockStaleAfterSeconds(),
+    })
+    if (error) return false
+    if (acquired === true) {
+      return async () => {
+        await db
+          .rpc('release_ai_dispatch_run_lock', { conversation_id: conversationId })
+          .then(
+            () => {},
+            () => {},
+          )
+      }
+    }
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) return false
+    await sleep(Math.min(aiRunLockPollMs(), remaining))
+  }
 }
