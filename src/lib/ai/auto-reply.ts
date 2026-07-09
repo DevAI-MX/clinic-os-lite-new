@@ -261,6 +261,9 @@ export async function dispatchInboundToAiReply(
           apiKey: config.apiKey,
           model: config.model,
           systemPrompt,
+          backend: config.agentBackend,
+          baseUrl: config.agentBaseUrl ?? undefined,
+          authToken: config.agentAuthToken ?? undefined,
           ctx: {
             db,
             accountId,
@@ -844,6 +847,9 @@ export async function dispatchAiResume(args: ResumeDispatchArgs): Promise<void> 
         apiKey: config.apiKey,
         model: config.model,
         systemPrompt,
+        backend: config.agentBackend,
+        baseUrl: config.agentBaseUrl ?? undefined,
+        authToken: config.agentAuthToken ?? undefined,
         ctx: {
           db,
           accountId,

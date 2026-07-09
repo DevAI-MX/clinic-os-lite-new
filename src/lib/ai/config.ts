@@ -12,10 +12,13 @@ interface AiConfigRow {
   auto_reply_max_per_conversation: number
   embeddings_api_key: string | null
   clinical_agent_enabled: boolean
+  agent_backend: 'native' | 'openclaw' | 'hermes' | null
+  agent_base_url: string | null
+  agent_auth_token: string | null
 }
 
 const CONFIG_COLUMNS =
-  'provider, model, api_key, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, embeddings_api_key, clinical_agent_enabled'
+  'provider, model, api_key, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, embeddings_api_key, clinical_agent_enabled, agent_backend, agent_base_url, agent_auth_token'
 
 /**
  * Load and decrypt the account's AI config for *use* (draft or
@@ -69,6 +72,22 @@ export async function loadAiConfig(
     }
   }
 
+  // Gateway token is optional (external harness may need no auth) and,
+  // like the embeddings key, a corrupt one shouldn't take down the turn:
+  // downgrade to no-auth with a breadcrumb (the gateway call will then
+  // fail auth and surface as a normal AiError the caller already handles).
+  let agentAuthToken: string | null = null
+  if (row.agent_auth_token) {
+    try {
+      agentAuthToken = decrypt(row.agent_auth_token)
+    } catch {
+      console.error(
+        `[ai config] agent gateway token for account ${accountId} could not be decrypted — check ENCRYPTION_KEY.`,
+      )
+      agentAuthToken = null
+    }
+  }
+
   return {
     provider: row.provider,
     model: row.model,
@@ -81,6 +100,11 @@ export async function loadAiConfig(
     // Defensive default: a row written before migration 032 (or by an
     // older client) may not carry the column — treat missing as off.
     clinicalAgentEnabled: row.clinical_agent_enabled ?? false,
+    // Missing (pre-migration row / older client) → native, so behavior is
+    // unchanged for every existing account.
+    agentBackend: row.agent_backend ?? 'native',
+    agentBaseUrl: row.agent_base_url ?? null,
+    agentAuthToken,
   }
 }
 

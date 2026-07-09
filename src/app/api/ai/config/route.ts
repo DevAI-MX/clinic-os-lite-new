@@ -149,6 +149,9 @@ export async function POST(request: Request) {
           autoReplyMaxPerConversation: maxPer,
           embeddingsApiKey: null,
           clinicalAgentEnabled: false,
+          agentBackend: 'native',
+          agentBaseUrl: null,
+          agentAuthToken: null,
         })
       } catch (err) {
         if (err instanceof AiError) {

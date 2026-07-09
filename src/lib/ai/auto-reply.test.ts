@@ -257,6 +257,9 @@ function aiConfig(overrides: Partial<AiConfig> = {}): AiConfig {
     autoReplyMaxPerConversation: 3,
     embeddingsApiKey: null,
     clinicalAgentEnabled: false,
+    agentBackend: 'native',
+    agentBaseUrl: null,
+    agentAuthToken: null,
     ...overrides,
   }
 }

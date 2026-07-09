@@ -8,6 +8,12 @@
 
 export type AiProvider = 'openai' | 'anthropic'
 
+/** Arnés agéntico de la cuenta. 'native' = los loops in-app (default).
+ *  'openclaw'/'hermes' = un gateway externo OpenAI-compat. Mismo union que
+ *  `AgentBackend` en agent/tools.ts (se mantiene aquí para no acoplar la
+ *  superficie de config al módulo del agente). */
+export type AiAgentBackend = 'native' | 'openclaw' | 'hermes'
+
 /**
  * Account AI setup, decrypted and ready to use. Produced by
  * `loadAiConfig` — `apiKey` is the plaintext BYO provider key
@@ -30,6 +36,15 @@ export interface AiConfig {
    *  loop over the scheduling tables) instead of a single text
    *  completion. Ignored for OpenAI / non-clinic accounts. */
   clinicalAgentEnabled: boolean
+  /** Arnés agéntico que atiende el turno. Default 'native' (loops in-app).
+   *  'openclaw'/'hermes' delegan a un gateway externo OpenAI-compat. */
+  agentBackend: AiAgentBackend
+  /** Base URL del gateway externo (incluye `/v1`). Requerida cuando
+   *  `agentBackend !== 'native'`; null en cuentas nativas. */
+  agentBaseUrl: string | null
+  /** Bearer token del gateway externo, descifrado (AES-256-GCM at rest,
+   *  como `apiKey`). null si el gateway no requiere auth. */
+  agentAuthToken: string | null
 }
 
 /** A single conversation turn in the shape both providers accept. */
