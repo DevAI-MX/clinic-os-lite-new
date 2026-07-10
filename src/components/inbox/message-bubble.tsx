@@ -13,6 +13,7 @@ import {
   LayoutTemplate,
   ImageOff,
   CornerDownLeft,
+  Download,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ReplyQuote } from "./reply-quote";
@@ -113,6 +114,54 @@ function MediaSpinner() {
   );
 }
 
+/** Nombre de archivo a partir del último segmento de la URL (los objetos
+ *  re-hospedados en Supabase Storage ya traen extensión). */
+function filenameFromUrl(url: string, fallback: string): string {
+  try {
+    const base = new URL(url).pathname.split("/").pop();
+    return base && base.includes(".") ? base : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Fuerza la descarga vía blob en vez de un `<a download>` plano: los
+ * navegadores ignoran el atributo `download` en enlaces de otro origen
+ * (Supabase Storage, no el dominio del panel) y simplemente navegan.
+ */
+async function downloadMedia(url: string, filename: string) {
+  try {
+    const res = await fetch(url);
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(blobUrl);
+  } catch {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+}
+
+function DownloadOverlayButton({ url, filename }: { url: string; filename: string }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        void downloadMedia(url, filename);
+      }}
+      title="Download"
+      className="absolute right-1.5 top-1.5 flex size-7 items-center justify-center rounded-full bg-black/50 text-white opacity-0 transition-opacity hover:bg-black/70 group-hover:opacity-100"
+    >
+      <Download className="size-3.5" />
+    </button>
+  );
+}
+
 function MediaImage({ url, alt }: { url: string; alt: string }) {
   const { src, error, loading, setError } = useMediaSrc(url);
 
@@ -127,12 +176,21 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
   if (loading) return <MediaSpinner />;
 
   return (
-    <img
-      src={src ?? ""}
-      alt={alt}
-      className="max-h-64 max-w-60 rounded-lg object-cover"
-      onError={() => setError(true)}
-    />
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group relative block w-fit"
+      title="View full size"
+    >
+      <img
+        src={src ?? ""}
+        alt={alt}
+        className="max-h-64 max-w-60 rounded-lg object-cover"
+        onError={() => setError(true)}
+      />
+      <DownloadOverlayButton url={url} filename={filenameFromUrl(url, "image.jpg")} />
+    </a>
   );
 }
 
@@ -143,12 +201,15 @@ function MediaVideo({ url }: { url: string }) {
   if (loading) return <MediaSpinner />;
 
   return (
-    <video
-      src={src ?? ""}
-      controls
-      className="max-h-64 max-w-60 rounded-lg"
-      onError={() => setError(true)}
-    />
+    <div className="group relative w-fit">
+      <video
+        src={src ?? ""}
+        controls
+        className="max-h-64 max-w-60 rounded-lg"
+        onError={() => setError(true)}
+      />
+      <DownloadOverlayButton url={url} filename={filenameFromUrl(url, "video.mp4")} />
+    </div>
   );
 }
 
@@ -165,13 +226,23 @@ function MediaAudio({ url }: { url: string }) {
   }
 
   return (
-    <audio
-      src={src ?? ""}
-      controls
-      preload="metadata"
-      className="max-w-60"
-      onError={() => setError(true)}
-    />
+    <div className="flex w-fit items-center gap-1">
+      <audio
+        src={src ?? ""}
+        controls
+        preload="metadata"
+        className="max-w-60"
+        onError={() => setError(true)}
+      />
+      <button
+        type="button"
+        onClick={() => void downloadMedia(url, filenameFromUrl(url, "audio.ogg"))}
+        title="Download"
+        className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+      >
+        <Download className="size-3.5" />
+      </button>
+    </div>
   );
 }
 
@@ -227,23 +298,40 @@ function MessageContent({ message }: { message: Message }) {
         </div>
       );
 
-    case "document":
-      if (!message.media_url) {
+    case "document": {
+      const documentUrl = message.media_url;
+      if (!documentUrl) {
         return <MediaUnavailable label={message.content_text || "Document"} />;
       }
       return (
-        <a
-          href={message.media_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm hover:bg-muted"
-        >
-          <FileText className="h-5 w-5 shrink-0 text-muted-foreground" />
-          <span className="truncate">
-            {message.content_text || "Document"}
-          </span>
-        </a>
+        <div className="flex items-center gap-1 rounded-lg bg-muted/50 pr-1 text-sm">
+          <a
+            href={documentUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 hover:bg-muted"
+          >
+            <FileText className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <span className="truncate">
+              {message.content_text || "Document"}
+            </span>
+          </a>
+          <button
+            type="button"
+            onClick={() =>
+              void downloadMedia(
+                documentUrl,
+                filenameFromUrl(documentUrl, message.content_text || "document"),
+              )
+            }
+            title="Download"
+            className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <Download className="h-4 w-4" />
+          </button>
+        </div>
       );
+    }
 
     case "template":
       return (

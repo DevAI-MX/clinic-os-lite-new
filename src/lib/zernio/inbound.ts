@@ -35,7 +35,19 @@ import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { rehostInboundMedia } from '@/lib/storage/rehost-inbound-media'
-import { resolveZernioWacrmAccount } from './config'
+import { getZernioConfig, resolveZernioWacrmAccount } from './config'
+
+/**
+ * Header Authorization para descargar adjuntos de Zernio — sus URLs de
+ * media exigen el mismo Bearer que el resto de la API (ver
+ * rehost-inbound-media.ts). `undefined` en dry-run/sin API key: el
+ * download fallará igual, pero sin lanzar (rehostInboundMedia atrapa
+ * cualquier fallo y el caller conserva la URL original).
+ */
+function zernioMediaAuthHeader(): string | undefined {
+  const apiKey = getZernioConfig().apiKey
+  return apiKey ? `Bearer ${apiKey}` : undefined
+}
 
 // ============================================================
 // Zernio payload shapes (from https://zernio.com/openapi.yaml)
@@ -381,8 +393,12 @@ async function processZernioInboundMessage(payload: ZernioWebhookEvent): Promise
   // de persistir para que el panel (y la visión en re-corridas tardías)
   // siempre tengan una URL viva. Si falla, se guarda la efímera.
   const mediaUrl = mapped.mediaUrl
-    ? ((await rehostInboundMedia({ db, accountId, url: mapped.mediaUrl })) ??
-      mapped.mediaUrl)
+    ? ((await rehostInboundMedia({
+        db,
+        accountId,
+        url: mapped.mediaUrl,
+        authHeader: zernioMediaAuthHeader(),
+      })) ?? mapped.mediaUrl)
     : null
 
   const { error: msgError } = await db.from('messages').insert({
@@ -579,6 +595,7 @@ async function processZernioOutboundEcho(payload: ZernioWebhookEvent): Promise<v
         db,
         accountId: account.accountId,
         url: mapped.mediaUrl,
+        authHeader: zernioMediaAuthHeader(),
       })) ?? mapped.mediaUrl)
     : null
 

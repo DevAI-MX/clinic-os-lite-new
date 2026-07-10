@@ -97,6 +97,15 @@ export interface RehostInboundMediaArgs {
   accountId: string
   /** URL efímera del proveedor (Zernio/Meta). */
   url: string
+  /**
+   * Header `Authorization` a mandar en la descarga. Las URLs de adjunto
+   * de Zernio (`zernio.com/api/v1/whatsapp/media/...`) NO son públicas —
+   * exigen el mismo Bearer <ZERNIO_API_KEY> que el resto de su API
+   * (confirmado: 401 sin header, 200 con él). Sin esto el download
+   * siempre fallaba y el panel se quedaba con la URL efímera cruda, que
+   * el navegador tampoco puede pedir con header — de ahí el ícono roto.
+   */
+  authHeader?: string
   /** Inyectable para tests; default Date.now(). */
   now?: number
   /** Inyectable para tests; default setTimeout real. */
@@ -111,11 +120,15 @@ function realSleep(ms: number): Promise<void> {
 async function downloadWithRetry(
   url: string,
   sleep: (ms: number) => Promise<void>,
+  authHeader?: string,
 ): Promise<Response | null> {
   const attempts = RETRY_DELAYS_MS.length + 1
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) })
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+        headers: authHeader ? { Authorization: authHeader } : undefined,
+      })
       if (res.ok) return res
       console.warn(
         `[rehost-media] download attempt ${attempt + 1}/${attempts} failed with status ${res.status}`,
@@ -142,7 +155,7 @@ export async function rehostInboundMedia(
   args: RehostInboundMediaArgs,
 ): Promise<string | null> {
   try {
-    const res = await downloadWithRetry(args.url, args.sleep ?? realSleep)
+    const res = await downloadWithRetry(args.url, args.sleep ?? realSleep, args.authHeader)
     if (!res) return null
 
     const declaredLength = Number(res.headers.get('content-length'))

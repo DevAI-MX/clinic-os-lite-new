@@ -57,6 +57,16 @@ vi.mock('@/lib/flows/admin-client', () => ({
 vi.mock('./config', () => ({
   resolveZernioWacrmAccount: () =>
     Promise.resolve({ accountId: 'acc-1', userId: 'user-1' }),
+  // apiKey null por default — processZernioEvent debe seguir funcionando
+  // sin Authorization header (rehostInboundMedia está mockeado aparte).
+  getZernioConfig: () => ({
+    apiKey: null,
+    accountId: null,
+    webhookSecret: null,
+    baseUrl: 'https://zernio.com/api',
+    wacrmAccountId: null,
+    dryRun: false,
+  }),
 }))
 
 // Re-hospedaje de media: se prueba a fondo en
