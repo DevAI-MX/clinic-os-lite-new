@@ -219,4 +219,36 @@ describe('rehostInboundMedia', () => {
 
     expect(await rehostInboundMedia({ db, ...baseArgs })).toBeNull()
   })
+
+  it('manda el Authorization header cuando se pasa authHeader (las URLs de Zernio lo exigen — 401 sin él)', async () => {
+    const fetchMock = vi.fn(async () => fakeResponse({ bytes: JPEG_BYTES }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { db, uploads } = fakeDb()
+
+    const url = await rehostInboundMedia({
+      db,
+      ...baseArgs,
+      authHeader: 'Bearer zk_test_123',
+    })
+
+    expect(url).not.toBeNull()
+    expect(uploads).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledWith(
+      baseArgs.url,
+      expect.objectContaining({ headers: { Authorization: 'Bearer zk_test_123' } }),
+    )
+  })
+
+  it('no manda header Authorization cuando no se pasa authHeader', async () => {
+    const fetchMock = vi.fn(async (_url: string, _options?: RequestInit) =>
+      fakeResponse({ bytes: JPEG_BYTES }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const { db } = fakeDb()
+
+    await rehostInboundMedia({ db, ...baseArgs })
+
+    const [, options] = fetchMock.mock.calls[0]
+    expect(options?.headers).toBeUndefined()
+  })
 })
